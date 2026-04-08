@@ -37,9 +37,15 @@ const PLAN_TYPES = [
   { id:"ambos",      label:"Salão + Fornecedor",      icon:"✦",  desc:"Perfil completo: serviços e venda de produtos.", color:"#A67FC4" },
 ];
 
+const REG_TYPES = [
+  { id:"pj", label:"Pessoa Jurídica",        icon:"🏢", desc:"Tenho CNPJ — salão, clínica ou empresa registrada.", color:"#C9A96E" },
+  { id:"pf", label:"Profissional Autônomo", icon:"💆", desc:"Trabalho por conta própria, sem CNPJ.", color:"#79B8D4" },
+];
+
 const EMAILJS_SERVICE_ID  = "SEU_SERVICE_ID";
 const EMAILJS_TEMPLATE_ID = "SEU_TEMPLATE_ID";
 const EMAILJS_PUBLIC_KEY  = "SUA_PUBLIC_KEY";
+const ADMIN_EMAIL = "seu-email-admin@gmail.com"; // ← troque pelo seu e-mail
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function uid() {
@@ -121,6 +127,17 @@ async function submitToFirestore(userId, formData, services, products, protocol)
 }
 
 // ─── FORM REDUCER ─────────────────────────────────────────────────────────────
+const INITIAL_FORM_PF = {
+  professionalName:"",specialties:"",cpf:"",email:"",phone:"",whatsapp:"",
+  instagram:"",description:"",
+  cep:"",street:"",number:"",complement:"",neighborhood:"",city:"",state:"",
+  ownerDoc:null,
+  password:"",confirmPassword:"",
+  emailCode:"",
+  emailVerified:false,cpfVerified:false,docUploaded:false,
+  acceptTerms:false,acceptPrivacy:false,
+};
+
 const INITIAL_FORM = {
   businessName:"",tradeName:"",cnpj:"",email:"",phone:"",whatsapp:"",
   website:"",instagram:"",description:"",
@@ -159,6 +176,7 @@ async function sendEmailOTP(toEmail, otpCode) {
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function BeautyRegister() {
   const [screen,        setScreen]       = useState("home");
+  const [regType,       setRegType]      = useState(null);  // "pj" | "pf"
   const [searchQuery,   setSearchQuery]  = useState("");
   const [searchResults, setSearchResults]= useState([]);
   const [searching,     setSearching]    = useState(false);
@@ -181,6 +199,7 @@ export default function BeautyRegister() {
   const [stepDir,       setStepDir]      = useState(1);
   const [isSubmitting,  setIsSubmitting] = useState(false);
   const [authUser,      setAuthUser]     = useState(null);   // usuário Firebase logado
+  const [isAdmin,       setIsAdmin]      = useState(false);
   const [authLoading,   setAuthLoading]  = useState(true);   // aguardando onAuthStateChanged
   const [draftLoading,  setDraftLoading] = useState(false);  // carregando rascunho do Firestore
   const [hasDraft,      setHasDraft]     = useState(false);
@@ -209,6 +228,7 @@ export default function BeautyRegister() {
   useEffect(()=>{
     const unsub = onAuthStateChanged(auth, user=>{
       setAuthUser(user);
+      setIsAdmin(user?.email === ADMIN_EMAIL);
       setAuthLoading(false);
       if (user) {
         // Tenta carregar rascunho ao logar
@@ -507,6 +527,11 @@ export default function BeautyRegister() {
               🔐 {authUser.email}
             </span>
           )}
+          {isAdmin&&(
+            <button className="btn" onClick={()=>setScreen("admin")} style={{padding:"8px 18px",borderRadius:8,background:"#7B3FBE",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",letterSpacing:"1px"}}>
+              🛡 Admin
+            </button>
+          )}
           <button className="btn" onClick={()=>setScreen("landing")} style={{padding:"8px 18px",borderRadius:8,background:"#1A1715",color:"#F7F5F0",fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",letterSpacing:"1px"}}>
             Cadastrar salão
           </button>
@@ -698,34 +723,321 @@ export default function BeautyRegister() {
       {/* ══ TYPE SELECTION ═══════════════════════════════════════════════════ */}
       {screen==="type"&&(
         <div className="slide-in" style={{maxWidth:720,margin:"0 auto",padding:"48px 24px"}}>
-          <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2.2rem",fontWeight:300,marginBottom:8,textAlign:"center"}}>Qual é o seu tipo de negócio?</h2>
-          <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288",textAlign:"center",marginBottom:40}}>Isso define quais seções você vai preencher no cadastro</p>
-          <div style={{display:"flex",flexDirection:"column",gap:16,marginBottom:32}}>
-            {PLAN_TYPES.map(t=>(
-              <div key={t.id} onClick={()=>setAccountType(t.id)} style={{
-                background:"#fff",borderRadius:14,padding:"24px",
-                border:`2px solid ${accountType===t.id?t.color:"#EDE9E2"}`,
-                cursor:"pointer",transition:"all 0.22s",
-                boxShadow:accountType===t.id?`0 0 0 4px ${t.color}18`:"none",
-                display:"flex",alignItems:"center",gap:20,
-                transform:accountType===t.id?"translateY(-1px)":"none",
-              }}>
-                <div style={{width:52,height:52,borderRadius:12,background:`${t.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.6rem",flexShrink:0}}>{t.icon}</div>
-                <div style={{flex:1}}>
-                  <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",marginBottom:4}}>{t.label}</div>
-                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>{t.desc}</div>
-                </div>
-                <div style={{width:22,height:22,borderRadius:"50%",border:`2px solid ${accountType===t.id?t.color:"#DDD8CE"}`,background:accountType===t.id?t.color:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.2s"}}>
-                  {accountType===t.id&&<div style={{width:8,height:8,borderRadius:"50%",background:"#fff"}} />}
-                </div>
+
+          {/* PASSO 1: PJ ou PF */}
+          {!regType&&(
+            <>
+              <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2.2rem",fontWeight:300,marginBottom:8,textAlign:"center"}}>Como você atua?</h2>
+              <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288",textAlign:"center",marginBottom:40}}>Isso define o tipo de cadastro e as verificações necessárias</p>
+              <div style={{display:"flex",flexDirection:"column",gap:16,marginBottom:32}}>
+                {REG_TYPES.map(t=>(
+                  <div key={t.id} onClick={()=>setRegType(t.id)} className="hov" style={{
+                    background:"#fff",borderRadius:14,padding:"24px",
+                    border:`2px solid ${t.color}`,cursor:"pointer",
+                    display:"flex",alignItems:"center",gap:20,
+                  }}>
+                    <div style={{width:56,height:56,borderRadius:12,background:`${t.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.8rem",flexShrink:0}}>{t.icon}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.3rem",marginBottom:4,color:"#1A1715"}}>{t.label}</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>{t.desc}</div>
+                      {t.id==="pf"&&(
+                        <div style={{marginTop:8,display:"flex",gap:8,flexWrap:"wrap"}}>
+                          {["CPF validado","E-mail confirmado","Foto do documento"].map(v=>(
+                            <span key={v} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#5BAA5B",background:"#5BAA5B10",padding:"3px 8px",borderRadius:10}}>✓ {v}</span>
+                          ))}
+                        </div>
+                      )}
+                      {t.id==="pj"&&(
+                        <div style={{marginTop:8,display:"flex",gap:8,flexWrap:"wrap"}}>
+                          {["CNPJ verificado","E-mail + telefone","Documentos"].map(v=>(
+                            <span key={v} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#C9A96E",background:"#C9A96E10",padding:"3px 8px",borderRadius:10}}>✓ {v}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{fontSize:"1.2rem",color:t.color}}>→</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <button className="btn" disabled={!accountType} onClick={()=>setScreen("form")} style={{width:"100%",padding:"14px",borderRadius:8,background:accountType?PLAN_TYPES.find(t=>t.id===accountType)?.color:"#DDD8CE",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"2px",fontWeight:500}}>
-            CONTINUAR →
-          </button>
+            </>
+          )}
+
+          {/* PASSO 2: tipo de negócio (só PJ) */}
+          {regType==="pj"&&(
+            <>
+              <button className="btn" onClick={()=>setRegType(null)} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288",background:"transparent",marginBottom:24}}>← Voltar</button>
+              <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2.2rem",fontWeight:300,marginBottom:8,textAlign:"center"}}>Qual é o seu tipo de negócio?</h2>
+              <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288",textAlign:"center",marginBottom:40}}>Isso define quais seções você vai preencher no cadastro</p>
+              <div style={{display:"flex",flexDirection:"column",gap:16,marginBottom:32}}>
+                {PLAN_TYPES.map(t=>(
+                  <div key={t.id} onClick={()=>setAccountType(t.id)} style={{
+                    background:"#fff",borderRadius:14,padding:"24px",
+                    border:`2px solid ${accountType===t.id?t.color:"#EDE9E2"}`,
+                    cursor:"pointer",transition:"all 0.22s",
+                    boxShadow:accountType===t.id?`0 0 0 4px ${t.color}18`:"none",
+                    display:"flex",alignItems:"center",gap:20,
+                    transform:accountType===t.id?"translateY(-1px)":"none",
+                  }}>
+                    <div style={{width:52,height:52,borderRadius:12,background:`${t.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.6rem",flexShrink:0}}>{t.icon}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",marginBottom:4}}>{t.label}</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>{t.desc}</div>
+                    </div>
+                    <div style={{width:22,height:22,borderRadius:"50%",border:`2px solid ${accountType===t.id?t.color:"#DDD8CE"}`,background:accountType===t.id?t.color:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.2s"}}>
+                      {accountType===t.id&&<div style={{width:8,height:8,borderRadius:"50%",background:"#fff"}} />}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="btn" disabled={!accountType} onClick={()=>setScreen("form")} style={{width:"100%",padding:"14px",borderRadius:8,background:accountType?PLAN_TYPES.find(t=>t.id===accountType)?.color:"#DDD8CE",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"2px",fontWeight:500}}>
+                CONTINUAR →
+              </button>
+            </>
+          )}
+
+          {/* PASSO 2: cadastro autônomo direto */}
+          {regType==="pf"&&(
+            <>
+              <button className="btn" onClick={()=>setRegType(null)} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288",background:"transparent",marginBottom:24}}>← Voltar</button>
+              <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2.2rem",fontWeight:300,marginBottom:8,textAlign:"center"}}>Cadastro de Autônomo</h2>
+              <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288",textAlign:"center",marginBottom:32}}>Simples e rápido — 3 etapas apenas</p>
+              <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:32}}>
+                {[
+                  {n:"1",title:"Seus dados",desc:"Nome, especialidades, contato e endereço"},
+                  {n:"2",title:"Verificação",desc:"Confirme seu e-mail e envie foto do RG ou CNH"},
+                  {n:"3",title:"Acesso",desc:"Crie sua senha e aceite os termos"},
+                ].map(s=>(
+                  <div key={s.n} style={{display:"flex",alignItems:"center",gap:16,background:"#fff",borderRadius:12,padding:"16px 20px",border:"1px solid #EDE9E2"}}>
+                    <div style={{width:32,height:32,borderRadius:"50%",background:"#79B8D410",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",fontWeight:500,color:"#79B8D4",flexShrink:0}}>{s.n}</div>
+                    <div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",fontWeight:500,color:"#1A1715"}}>{s.title}</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288"}}>{s.desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="btn" onClick={()=>setScreen("form_pf")} style={{width:"100%",padding:"14px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"2px",fontWeight:500}}>
+                COMEÇAR CADASTRO →
+              </button>
+            </>
+          )}
         </div>
       )}
+
+      {/* ══ FORM AUTÔNOMO (PF) ══════════════════════════════════════════════ */}
+      {screen==="form_pf"&&(()=>{
+        const [pfData,setPfData]=React.useState(INITIAL_FORM_PF);
+        const [pfStep,setPfStep]=React.useState(1);
+        const [pfErrors,setPfErrors]=React.useState({});
+        const [pfOTP,setPfOTP]=React.useState("");
+        const [pfSending,setPfSending]=React.useState(false);
+        const [pfSubmitting,setPfSubmitting]=React.useState(false);
+        const docRef=React.useRef();
+        const setPf=(k,v)=>setPfData(p=>({...p,[k]:v}));
+        const sendOTP=async()=>{
+          if(!validateEmail(pfData.email)){setPfErrors(e=>({...e,email:"E-mail inválido"}));return;}
+          setPfSending(true);
+          const otp=generateOTP(); setPfOTP(otp);
+          try{await sendEmailOTP(pfData.email,otp);showToast(`Código enviado para ${pfData.email}`,"success");}
+          catch{showToast(`[DEMO] Código: ${otp}`,"info");}
+          setPfSending(false);
+        };
+        const checkOTP=()=>{
+          if(pfData.emailCode===pfOTP){setPf("emailVerified",true);showToast("E-mail verificado ✓","success");}
+          else showToast("Código incorreto","error");
+        };
+        const handleDoc=e=>{
+          const f=e.target.files[0];if(!f)return;
+          if(!validateFileType(f,ALLOWED_DOC_TYPES)){showToast("Use PDF, JPG ou PNG","error");return;}
+          if(f.size>5*1024*1024){showToast("Máx 5MB","error");return;}
+          setPf("ownerDoc",f); setPf("docUploaded",true); showToast("Documento enviado ✓","success");
+        };
+        const validatePfStep=()=>{
+          const e={};
+          if(pfStep===1){
+            if(!pfData.professionalName) e.professionalName="Nome obrigatório";
+            if(!pfData.specialties)      e.specialties="Informe ao menos uma especialidade";
+            if(!validateCPF(pfData.cpf)) e.cpf="CPF inválido";
+            if(!validateEmail(pfData.email)) e.email="E-mail inválido";
+            if(!pfData.phone)            e.phone="Telefone obrigatório";
+            if(!pfData.city)             e.city="Cidade obrigatória";
+          }
+          if(pfStep===2){
+            if(!pfData.emailVerified) e.emailVerified="Confirme seu e-mail";
+            if(!pfData.docUploaded)   e.docUploaded="Envie uma foto do seu documento";
+          }
+          if(pfStep===3){
+            const pw=pfData.password;
+            if(pw.length<8)                     e.password="Mínimo 8 caracteres";
+            if(!/[A-Z]/.test(pw))               e.password="Inclua ao menos uma maiúscula";
+            if(!/[0-9]/.test(pw))               e.password="Inclua ao menos um número";
+            if(pw!==pfData.confirmPassword)     e.confirmPassword="Senhas não conferem";
+            if(!pfData.acceptTerms)             e.acceptTerms="Aceite os termos";
+            if(!pfData.acceptPrivacy)           e.acceptPrivacy="Aceite a política de privacidade";
+          }
+          setPfErrors(e); return Object.keys(e).length===0;
+        };
+        const submitPF=async()=>{
+          if(!validatePfStep())return;
+          setPfSubmitting(true);
+          try{
+            const cred=await createUserWithEmailAndPassword(auth,pfData.email,pfData.password);
+            const clean={...pfData}; delete clean.password; delete clean.confirmPassword; delete clean.ownerDoc; delete clean.emailCode;
+            await setDoc(doc(db,"professionals",cred.user.uid),{
+              ...clean, regType:"pf", status:"pending_review",
+              protocol:`BH-PF-${uid().slice(0,8).toUpperCase()}`,
+              createdAt:serverTimestamp(),
+            });
+            setScreen("review");
+          }catch(err){
+            if(err.code==="auth/email-already-in-use") showToast("E-mail já cadastrado","error");
+            else showToast("Erro ao salvar. Tente novamente.","error");
+          }finally{setPfSubmitting(false);}
+        };
+        const pwS=passwordStrength(pfData.password);
+        return(
+          <div style={{maxWidth:620,margin:"0 auto",padding:"32px 24px"}}>
+            {/* Progress */}
+            <div style={{marginBottom:32}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288"}}>Etapa {pfStep} de 3</span>
+                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#79B8D4"}}>{Math.round((pfStep/3)*100)}% concluído</span>
+              </div>
+              <div className="score-bar" style={{marginBottom:10,height:4}}>
+                <div className="score-fill" style={{width:`${(pfStep/3)*100}%`,background:"linear-gradient(90deg,#79B8D4,#A8D4E8)"}} />
+              </div>
+              <div style={{display:"flex",gap:4}}>
+                {["Seus dados","Verificação","Acesso"].map((label,i)=>{
+                  const n=i+1,done=n<pfStep,active=n===pfStep;
+                  return(<div key={n} className="step-pill" style={{flex:1,textAlign:"center",background:active?"#79B8D4":done?"#79B8D415":"#E8E3DA",color:active?"#fff":done?"#79B8D4":"#B0A898",border:`1px solid ${active?"#79B8D4":done?"#79B8D440":"transparent"}`}}>{done?"✓":n} {label}</div>);
+                })}
+              </div>
+            </div>
+
+            {/* ETAPA 1 — Dados */}
+            {pfStep===1&&(
+              <div className="slide-in" style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+                <FormSection title="Seus dados profissionais" icon="💆">
+                  <Field label="Nome completo *" error={pfErrors.professionalName}>
+                    <input className={`inp${pfErrors.professionalName?" err":""}`} value={pfData.professionalName} onChange={e=>setPf("professionalName",e.target.value)} placeholder="Como você aparece para os clientes" />
+                  </Field>
+                  <Field label="Especialidades *" error={pfErrors.specialties}>
+                    <input className={`inp${pfErrors.specialties?" err":""}`} value={pfData.specialties} onChange={e=>setPf("specialties",e.target.value)} placeholder="Ex: Manicure, Cabeleireira, Designer de sobrancelha" />
+                  </Field>
+                  <Row2>
+                    <Field label="CPF *" error={pfErrors.cpf}>
+                      <input className={`inp${pfErrors.cpf?" err":""}`} value={pfData.cpf} onChange={e=>setPf("cpf",fmtCPF(e.target.value))} placeholder="000.000.000-00" maxLength={14} />
+                    </Field>
+                    <Field label="Telefone / WhatsApp *" error={pfErrors.phone}>
+                      <input className={`inp${pfErrors.phone?" err":""}`} value={pfData.phone} onChange={e=>setPf("phone",fmtPhone(e.target.value))} placeholder="(00) 00000-0000" maxLength={15} />
+                    </Field>
+                  </Row2>
+                  <Field label="E-mail *" error={pfErrors.email}>
+                    <input className={`inp${pfErrors.email?" err":""}`} value={pfData.email} onChange={e=>setPf("email",e.target.value)} placeholder="seu@email.com" type="email" />
+                  </Field>
+                  <Row2>
+                    <Field label="Cidade *" error={pfErrors.city}>
+                      <input className={`inp${pfErrors.city?" err":""}`} value={pfData.city} onChange={e=>setPf("city",e.target.value)} placeholder="Ex: Vitória" />
+                    </Field>
+                    <Field label="Bairro">
+                      <input className="inp" value={pfData.neighborhood} onChange={e=>setPf("neighborhood",e.target.value)} placeholder="Ex: Jardim Camburi" />
+                    </Field>
+                  </Row2>
+                  <Field label="Mini bio (opcional)">
+                    <textarea className="inp" rows={3} value={pfData.description} onChange={e=>setPf("description",e.target.value)} placeholder="Fale um pouco sobre você e sua experiência..." style={{resize:"vertical"}} />
+                  </Field>
+                </FormSection>
+              </div>
+            )}
+
+            {/* ETAPA 2 — Verificação */}
+            {pfStep===2&&(
+              <div className="slide-in" style={{display:"flex",flexDirection:"column",gap:16}}>
+                <div style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+                  <FormSection title="Confirme seu e-mail" icon="📧">
+                    <Hint ok={pfData.emailVerified}>{pfData.emailVerified?"✓ E-mail confirmado!":"Enviaremos um código de 6 dígitos para "+pfData.email}</Hint>
+                    {!pfData.emailVerified&&(
+                      <>
+                        <button className="btn" onClick={sendOTP} disabled={pfSending} style={{padding:"10px 20px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem"}}>
+                          {pfSending?"Enviando...":"Enviar código"}
+                        </button>
+                        <Row2>
+                          <Field label="Código recebido" error={pfErrors.emailVerified}>
+                            <input className="inp" value={pfData.emailCode} onChange={e=>setPf("emailCode",e.target.value)} placeholder="000000" maxLength={6} />
+                          </Field>
+                          <div style={{display:"flex",alignItems:"flex-end"}}>
+                            <button className="btn" onClick={checkOTP} style={{width:"100%",padding:"11px",borderRadius:8,background:"#1A1715",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem"}}>Verificar</button>
+                          </div>
+                        </Row2>
+                      </>
+                    )}
+                  </FormSection>
+                </div>
+                <div style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+                  <FormSection title="Foto do documento" icon="🪪">
+                    <Hint ok={pfData.docUploaded}>{pfData.docUploaded?"✓ Documento enviado! Revisaremos em até 48h.":"Envie uma foto do seu RG ou CNH (frente). Isso garante a segurança da plataforma."}</Hint>
+                    {!pfData.docUploaded&&(
+                      <>
+                        <div onClick={()=>docRef.current.click()} className="drop-zone" style={{padding:"24px",display:"flex",alignItems:"center",gap:12}}>
+                          <span style={{fontSize:"1.5rem"}}>🪪</span>
+                          <div>
+                            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#1A1715",marginBottom:2}}>Clique para enviar RG ou CNH</div>
+                            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.7rem",color:"#9A9288"}}>JPG, PNG ou PDF · máx 5MB</div>
+                          </div>
+                        </div>
+                        <input ref={docRef} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={handleDoc} style={{display:"none"}} />
+                        {pfErrors.docUploaded&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:4}}>⚠ {pfErrors.docUploaded}</div>}
+                      </>
+                    )}
+                  </FormSection>
+                </div>
+              </div>
+            )}
+
+            {/* ETAPA 3 — Acesso */}
+            {pfStep===3&&(
+              <div className="slide-in" style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+                <FormSection title="Crie sua senha" icon="🔐">
+                  <Field label="Senha *" error={pfErrors.password}>
+                    <div className="pass-wrap">
+                      <input className={`inp${pfErrors.password?" err":""}`} type={showPass?"text":"password"} value={pfData.password} onChange={e=>setPf("password",e.target.value)} placeholder="Mínimo 8 caracteres" />
+                      <span className="pass-eye" onClick={()=>setShowPass(p=>!p)}>{showPass?"🙈":"👁"}</span>
+                    </div>
+                    {pfData.password&&(<><div className="score-bar" style={{marginTop:6}}><div className="score-fill" style={{width:`${pwS.score}%`,background:pwS.color}} /></div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:pwS.color,marginTop:3}}>{pwS.label}</div></>)}
+                  </Field>
+                  <Field label="Confirmar senha *" error={pfErrors.confirmPassword}>
+                    <div className="pass-wrap">
+                      <input className={`inp${pfErrors.confirmPassword?" err":""}`} type={showConfirmPass?"text":"password"} value={pfData.confirmPassword} onChange={e=>setPf("confirmPassword",e.target.value)} placeholder="Repita a senha" />
+                      <span className="pass-eye" onClick={()=>setShowConfirmPass(p=>!p)}>{showConfirmPass?"🙈":"👁"}</span>
+                    </div>
+                  </Field>
+                  <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:8}}>
+                    {[
+                      {k:"acceptTerms",label:"Li e aceito os Termos de Uso",err:pfErrors.acceptTerms},
+                      {k:"acceptPrivacy",label:"Li e aceito a Política de Privacidade",err:pfErrors.acceptPrivacy},
+                    ].map(({k,label,err})=>(
+                      <div key={k}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setPf(k,!pfData[k])}>
+                          <div className={`check-box${pfData[k]?" on":""}`}>{pfData[k]&&<span style={{color:"#fff",fontSize:"0.7rem"}}>✓</span>}</div>
+                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>{label}</span>
+                        </div>
+                        {err&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:3,marginLeft:30}}>⚠ {err}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </FormSection>
+              </div>
+            )}
+
+            {/* Botões de navegação */}
+            <div style={{display:"flex",gap:12,marginTop:24}}>
+              {pfStep>1&&<button className="btn" onClick={()=>setPfStep(p=>p-1)} style={{flex:1,padding:"13px",borderRadius:8,border:"1px solid #DDD8CE",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#7A7268"}}>← Voltar</button>}
+              {pfStep<3&&<button className="btn" onClick={()=>{if(validatePfStep())setPfStep(p=>p+1);window.scrollTo(0,0);}} style={{flex:2,padding:"13px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px"}}>CONTINUAR →</button>}
+              {pfStep===3&&<button className="btn" onClick={submitPF} disabled={pfSubmitting} style={{flex:2,padding:"13px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px"}}>{pfSubmitting?<><span className="spinner"/>Enviando...</>:"FINALIZAR CADASTRO"}</button>}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ══ FORM ════════════════════════════════════════════════════════════ */}
       {screen==="form"&&(
@@ -1241,6 +1553,217 @@ function ProductEditor({products,setProducts,showToast}){
     </div>
   );
 }
+
+
+      {/* ══ ADMIN PANEL ═════════════════════════════════════════════════════ */}
+      {screen==="admin"&&(()=>{
+        if(!isAdmin) return(
+          <div style={{maxWidth:480,margin:"80px auto",padding:"40px 24px",textAlign:"center"}}>
+            <div style={{fontSize:"3rem",marginBottom:16}}>🔒</div>
+            <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.8rem",fontWeight:300,marginBottom:8}}>Acesso restrito</h2>
+            <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288"}}>Faça login com a conta de administrador.</p>
+          </div>
+        );
+        const [adminTab,   setAdminTab]   = React.useState("pending");
+        const [records,    setRecords]    = React.useState([]);
+        const [loading,    setLoading]    = React.useState(true);
+        const [selected,   setSelected]   = React.useState(null);
+        const [actionNote, setActionNote] = React.useState("");
+        const [acting,     setActing]     = React.useState(false);
+
+        React.useEffect(()=>{
+          setLoading(true);
+          import("firebase/firestore").then(({collection,query,where,getDocs,getFirestore})=>{
+            const db2=getFirestore();
+            const status = adminTab==="pending"?"pending_review": adminTab==="active"?"active":"rejected";
+            Promise.all([
+              getDocs(query(collection(db2,"establishments"),where("status","==",status))),
+              getDocs(query(collection(db2,"professionals"),  where("status","==",status))),
+            ]).then(([estSnap,profSnap])=>{
+              const all=[];
+              estSnap.forEach(d=>all.push({id:d.id,_type:"pj",...d.data()}));
+              profSnap.forEach(d=>all.push({id:d.id,_type:"pf",...d.data()}));
+              all.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+              setRecords(all); setLoading(false);
+            }).catch(()=>setLoading(false));
+          });
+        },[adminTab]);
+
+        const act=async(record,newStatus)=>{
+          setActing(true);
+          import("firebase/firestore").then(async({doc,updateDoc,getFirestore})=>{
+            const db2=getFirestore();
+            const col=record._type==="pf"?"professionals":"establishments";
+            await updateDoc(doc(db2,col,record.id),{
+              status:newStatus,
+              reviewNote:actionNote,
+              reviewedAt:new Date().toISOString(),
+              reviewedBy:authUser.email,
+            });
+            setRecords(r=>r.filter(x=>x.id!==record.id));
+            setSelected(null); setActionNote(""); setActing(false);
+            showToast(newStatus==="active"?"✓ Aprovado e publicado!":"Cadastro rejeitado.","success");
+          });
+        };
+
+        const tabs=[
+          {id:"pending", label:"Pendentes",  color:"#E8B86D"},
+          {id:"active",  label:"Aprovados",  color:"#5BAA5B"},
+          {id:"rejected",label:"Rejeitados", color:"#D4735A"},
+        ];
+
+        return(
+          <div style={{maxWidth:900,margin:"0 auto",padding:"32px 24px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:28}}>
+              <span style={{fontSize:"1.4rem"}}>🛡</span>
+              <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2rem",fontWeight:300}}>Painel de Revisão</h1>
+            </div>
+
+            {/* Tabs */}
+            <div style={{display:"flex",gap:8,marginBottom:24,borderBottom:"1px solid #EDE9E2",paddingBottom:0}}>
+              {tabs.map(t=>(
+                <button key={t.id} className="btn" onClick={()=>{setAdminTab(t.id);setSelected(null);}} style={{
+                  padding:"10px 20px",borderRadius:"8px 8px 0 0",border:"1px solid #EDE9E2",borderBottom:"none",
+                  background:adminTab===t.id?"#fff":"#F8F6F2",
+                  fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",
+                  color:adminTab===t.id?t.color:"#9A9288",
+                  fontWeight:adminTab===t.id?500:400,
+                  marginBottom:adminTab===t.id?"-1px":"0",
+                }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {loading&&<div style={{textAlign:"center",padding:"40px",fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288"}}>Carregando...</div>}
+
+            {!loading&&records.length===0&&(
+              <div style={{textAlign:"center",padding:"60px 24px",background:"#fff",borderRadius:14,border:"2px dashed #EDE9E2"}}>
+                <div style={{fontSize:"2rem",marginBottom:8}}>✅</div>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#7A7268"}}>Nenhum cadastro {adminTab==="pending"?"pendente":adminTab==="active"?"aprovado":"rejeitado"}</div>
+              </div>
+            )}
+
+            <div style={{display:"grid",gridTemplateColumns:selected?"1fr 380px":"1fr",gap:20,alignItems:"start"}}>
+              {/* Lista */}
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                {records.map(r=>(
+                  <div key={r.id} onClick={()=>setSelected(selected?.id===r.id?null:r)} className="hov" style={{
+                    background:"#fff",borderRadius:12,padding:"16px 20px",border:`1.5px solid ${selected?.id===r.id?"#7B3FBE":"#EDE9E2"}`,
+                    cursor:"pointer",display:"flex",gap:14,alignItems:"center",
+                  }}>
+                    <div style={{width:44,height:44,borderRadius:10,background:r._type==="pf"?"#79B8D415":"#C9A96E15",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.4rem",flexShrink:0}}>
+                      {r._type==="pf"?"💆":"🏢"}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#1A1715",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                        {r._type==="pf"?r.professionalName:r.businessName||r.tradeName}
+                      </div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288",marginTop:2}}>
+                        {r._type==="pf"?"Autônomo":"Estabelecimento"} · {r.city}{r.state?`, ${r.state}`:""} · {r.email}
+                      </div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end",flexShrink:0}}>
+                      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",padding:"3px 8px",borderRadius:10,
+                        background:r._type==="pf"?"#79B8D415":"#C9A96E15",
+                        color:r._type==="pf"?"#4A8FAA":"#9A6B30"}}>
+                        {r._type==="pf"?"CPF":"CNPJ"}
+                      </span>
+                      {r.cnpjVerified&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#5BAA5B"}}>✓ Verificado</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Detalhe */}
+              {selected&&(
+                <div className="fade-up" style={{background:"#fff",borderRadius:14,border:"1px solid #EDE9E2",padding:"24px",position:"sticky",top:80}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+                    <div>
+                      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.3rem",color:"#1A1715"}}>
+                        {selected._type==="pf"?selected.professionalName:selected.businessName}
+                      </div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288",marginTop:2}}>
+                        Protocolo: {selected.protocol||selected.id.slice(0,8).toUpperCase()}
+                      </div>
+                    </div>
+                    <button className="btn" onClick={()=>setSelected(null)} style={{color:"#9A9288",fontSize:"1.1rem",background:"transparent"}}>✕</button>
+                  </div>
+
+                  {/* Dados principais */}
+                  <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:16}}>
+                    {[
+                      ["Tipo",        selected._type==="pf"?"Profissional Autônomo":"Estabelecimento"],
+                      ["E-mail",      selected.email],
+                      ["Telefone",    selected.phone],
+                      ["Cidade",      `${selected.city||"—"}${selected.state?`, ${selected.state}`:""}`],
+                      selected._type==="pj"?["CNPJ", selected.cnpj||"—"]:["CPF", selected.cpf||"—"],
+                      selected._type==="pj"?["CNPJ verificado", selected.cnpjVerified?"✓ Sim":"✗ Não"]:null,
+                      ["E-mail verificado", selected.emailVerified?"✓ Sim":"✗ Não"],
+                    ].filter(Boolean).map(([k,v])=>(
+                      <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #F0EDE6"}}>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288"}}>{k}</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#1A1715",fontWeight:500,textAlign:"right",maxWidth:"55%"}}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selected.description&&(
+                    <div style={{background:"#F8F6F2",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:4}}>DESCRIÇÃO</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#1A1715",lineHeight:1.5}}>{selected.description}</div>
+                    </div>
+                  )}
+
+                  {selected._type==="pf"&&selected.specialties&&(
+                    <div style={{background:"#79B8D410",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#4A8FAA",marginBottom:4}}>ESPECIALIDADES</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#1A1715"}}>{selected.specialties}</div>
+                    </div>
+                  )}
+
+                  {/* Documento enviado */}
+                  <div style={{background:"#F8F6F2",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:6}}>DOCUMENTO</div>
+                    {selected.docUploaded
+                      ? <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#5BAA5B"}}>✓ Documento enviado — revisar no Firebase Storage</div>
+                      : <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#D4735A"}}>✗ Nenhum documento enviado</div>
+                    }
+                  </div>
+
+                  {/* Nota de revisão */}
+                  {adminTab==="pending"&&(
+                    <>
+                      <div style={{marginBottom:12}}>
+                        <label style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",display:"block",marginBottom:6}}>Nota de revisão (opcional)</label>
+                        <textarea className="inp" rows={2} value={actionNote} onChange={e=>setActionNote(e.target.value)} placeholder="Ex: Documento ilegível, solicitar reenvio..." style={{resize:"vertical",fontSize:"0.78rem"}} />
+                      </div>
+                      <div style={{display:"flex",gap:10}}>
+                        <button className="btn" onClick={()=>act(selected,"rejected")} disabled={acting} style={{flex:1,padding:"10px",borderRadius:8,background:"#FFF5F3",border:"1px solid #F4D0C8",fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#D4735A"}}>
+                          ✗ Rejeitar
+                        </button>
+                        <button className="btn" onClick={()=>act(selected,"active")} disabled={acting} style={{flex:2,padding:"10px",borderRadius:8,background:"#5BAA5B",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",letterSpacing:"0.5px"}}>
+                          {acting?<><span className="spinner"/>Processando...</>:"✓ Aprovar e publicar"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {adminTab!=="pending"&&(
+                    <div style={{background:adminTab==="active"?"#5BAA5B10":"#D4735A10",borderRadius:8,padding:"10px 12px"}}>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:adminTab==="active"?"#5BAA5B":"#D4735A"}}>
+                        {adminTab==="active"?"✓ Aprovado":"✗ Rejeitado"} · {selected.reviewedBy||"admin"}
+                      </div>
+                      {selected.reviewNote&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",marginTop:4}}>{selected.reviewNote}</div>}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
 
 // ─── SMALL COMPONENTS ─────────────────────────────────────────────────────────
 function FormSection({title,icon,children}){return(<div><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:24}}><span style={{fontSize:"1.3rem"}}>{icon}</span><h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.5rem",fontWeight:300}}>{title}</h3></div><div style={{display:"flex",flexDirection:"column",gap:16}}>{children}</div></div>);}
