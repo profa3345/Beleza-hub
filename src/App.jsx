@@ -158,7 +158,10 @@ async function sendEmailOTP(toEmail, otpCode) {
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function BeautyRegister() {
-  const [screen,        setScreen]       = useState("landing");
+  const [screen,        setScreen]       = useState("home");
+  const [searchQuery,   setSearchQuery]  = useState("");
+  const [searchResults, setSearchResults]= useState([]);
+  const [searching,     setSearching]    = useState(false);
   const [accountType,   setAccountType]  = useState(null);
   const [step,          setStep]         = useState(1);
   const [formData,      dispatch]        = useReducer(formReducer,INITIAL_FORM);
@@ -487,14 +490,12 @@ export default function BeautyRegister() {
 
       {/* NAV */}
       <nav style={{background:"#fff",borderBottom:"1px solid #EDE9E2",padding:"0 24px",height:60,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.04)"}}>
-        <div onClick={()=>{setScreen("landing");setStep(1);}} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
+        <div onClick={()=>setScreen("home")} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
           <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.4rem",color:"#1A1715",letterSpacing:"1px"}}>
             beleza<em style={{color:"#C9A96E"}}>.hub</em>
           </span>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",letterSpacing:"3px"}}>CADASTRO EMPRESARIAL</span>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:16}}>
-          {/* Indicador de auto-save Firebase */}
           {authUser&&saveStatus&&(
             <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:saveStatus==="saved"?"#5BAA5B":"#9A9288",display:"flex",alignItems:"center",gap:4}}>
               {saveStatus==="saving"&&<span className="spinner" style={{width:10,height:10,borderTopColor:"#9A9288",marginRight:0}} />}
@@ -506,12 +507,138 @@ export default function BeautyRegister() {
               🔐 {authUser.email}
             </span>
           )}
-          <div style={{display:"flex",alignItems:"center",gap:6}}>
-            <div className="sec-dot" style={{width:8,height:8,borderRadius:"50%",background:securityScore>60?"#5BAA5B":securityScore>30?"#E8B86D":"#D4735A",boxShadow:`0 0 6px ${securityScore>60?"#5BAA5B":securityScore>30?"#E8B86D":"#D4735A"}`}} />
-            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268"}}>Segurança: {securityScore}%</span>
-          </div>
+          <button className="btn" onClick={()=>setScreen("landing")} style={{padding:"8px 18px",borderRadius:8,background:"#1A1715",color:"#F7F5F0",fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",letterSpacing:"1px"}}>
+            Cadastrar salão
+          </button>
         </div>
       </nav>
+
+      {/* ══ HOME — BUSCA DE SALÕES ══════════════════════════════════════════ */}
+      {screen==="home"&&(
+        <div className="fade-up">
+          {/* Hero */}
+          <div style={{background:"linear-gradient(160deg,#1A1715 0%,#2C2420 60%,#1A1715 100%)",padding:"80px 24px 64px",textAlign:"center",position:"relative",overflow:"hidden"}}>
+            <div style={{position:"absolute",inset:0,backgroundImage:"radial-gradient(circle at 20% 60%,rgba(201,169,110,0.10) 0%,transparent 50%),radial-gradient(circle at 80% 20%,rgba(201,169,110,0.07) 0%,transparent 40%)"}} />
+            <div style={{position:"relative",maxWidth:600,margin:"0 auto"}}>
+              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",letterSpacing:"5px",color:"#C9A96E"}}>ENCONTRE O SALÃO IDEAL</span>
+              <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"clamp(2.2rem,5vw,3.6rem)",color:"#F7F5F0",fontWeight:300,lineHeight:1.1,margin:"20px 0 12px"}}>
+                Beleza perto de você
+              </h1>
+              <p style={{fontFamily:"'DM Sans',sans-serif",color:"#9A8F85",fontSize:"0.9rem",marginBottom:36,lineHeight:1.6}}>
+                Encontre salões, clínicas e profissionais verificados na sua cidade ou bairro.
+              </p>
+              {/* Campo de busca */}
+              <div style={{display:"flex",gap:0,maxWidth:480,margin:"0 auto",borderRadius:10,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.3)"}}>
+                <input
+                  className="inp"
+                  style={{borderRadius:0,border:"none",fontSize:"0.9rem",padding:"14px 20px",flex:1}}
+                  placeholder="Cidade ou bairro... ex: Vitória, Jardim Camburi"
+                  value={searchQuery}
+                  onChange={e=>setSearchQuery(e.target.value)}
+                  onKeyDown={e=>{
+                    if(e.key==="Enter"){
+                      const q=searchQuery.trim();
+                      if(!q)return;
+                      setSearching(true);
+                      const { collection, query, where, getDocs } = window._firestore||{};
+                      import("firebase/firestore").then(({collection,query,where,getDocs,getFirestore})=>{
+                        const db2=getFirestore();
+                        getDocs(query(collection(db2,"establishments"),where("status","==","active"))).then(snap=>{
+                          const results=[];
+                          snap.forEach(d=>{
+                            const data=d.data();
+                            const loc=(data.city||"")+" "+(data.neighborhood||"")+" "+(data.state||"");
+                            if(loc.toLowerCase().includes(q.toLowerCase())) results.push({id:d.id,...data});
+                          });
+                          setSearchResults(results);
+                          setSearching(false);
+                          setScreen("results");
+                        }).catch(()=>{setSearchResults([]);setSearching(false);setScreen("results");});
+                      });
+                    }
+                  }}
+                />
+                <button
+                  className="btn"
+                  style={{borderRadius:0,background:"#C9A96E",color:"#fff",padding:"14px 24px",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px",whiteSpace:"nowrap"}}
+                  onClick={()=>{
+                    const q=searchQuery.trim();
+                    if(!q)return;
+                    setSearching(true);
+                    import("firebase/firestore").then(({collection,query,where,getDocs,getFirestore})=>{
+                      const db2=getFirestore();
+                      getDocs(query(collection(db2,"establishments"),where("status","==","active"))).then(snap=>{
+                        const results=[];
+                        snap.forEach(d=>{
+                          const data=d.data();
+                          const loc=(data.city||"")+" "+(data.neighborhood||"")+" "+(data.state||"");
+                          if(loc.toLowerCase().includes(q.toLowerCase())) results.push({id:d.id,...data});
+                        });
+                        setSearchResults(results);
+                        setSearching(false);
+                        setScreen("results");
+                      }).catch(()=>{setSearchResults([]);setSearching(false);setScreen("results");});
+                    });
+                  }}
+                >
+                  {searching?"...":"Buscar"}
+                </button>
+              </div>
+            </div>
+          </div>
+          {/* Categorias de serviço */}
+          <div style={{maxWidth:800,margin:"0 auto",padding:"48px 24px"}}>
+            <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",letterSpacing:"4px",color:"#9A9288",textAlign:"center",marginBottom:24}}>CATEGORIAS POPULARES</p>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:12}}>
+              {SERVICE_CATEGORIES.map((cat,i)=>{
+                const icons={"Cabelo":"✂️","Unhas":"💅","Maquiagem":"💄","Skincare":"🧴","Massagem":"💆","Depilação":"🪒","Sobrancelha":"👁️","Barba":"🧔","Outros":"✨"};
+                return(
+                  <div key={cat} className="hov fade-up" onClick={()=>{setSearchQuery(cat);}} style={{textAlign:"center",padding:"16px 8px",background:"#fff",borderRadius:12,border:"1px solid #EDE9E2",animationDelay:`${i*0.05}s`,cursor:"pointer"}}>
+                    <div style={{fontSize:"1.6rem",marginBottom:6}}>{icons[cat]||"✨"}</div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#1A1715"}}>{cat}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ RESULTADOS DA BUSCA ══════════════════════════════════════════════ */}
+      {screen==="results"&&(
+        <div className="fade-up" style={{maxWidth:800,margin:"0 auto",padding:"40px 24px"}}>
+          <button className="btn" onClick={()=>setScreen("home")} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288",background:"transparent",marginBottom:24}}>
+            ← Voltar
+          </button>
+          <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.8rem",fontWeight:300,marginBottom:8}}>
+            Resultados para "{searchQuery}"
+          </h2>
+          <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#9A9288",marginBottom:32}}>
+            {searchResults.length} salão{searchResults.length!==1?"s":""} encontrado{searchResults.length!==1?"s":""}
+          </p>
+          {searchResults.length===0?(
+            <div style={{textAlign:"center",padding:"60px 24px",background:"#fff",borderRadius:14,border:"2px dashed #EDE9E2"}}>
+              <div style={{fontSize:"2.5rem",marginBottom:12}}>🔍</div>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#7A7268",marginBottom:8}}>Nenhum salão encontrado</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#B0A898"}}>Tente outra cidade ou bairro</div>
+            </div>
+          ):(
+            <div style={{display:"flex",flexDirection:"column",gap:16}}>
+              {searchResults.map(s=>(
+                <div key={s.id} className="hov" style={{background:"#fff",borderRadius:14,padding:"20px 24px",border:"1px solid #EDE9E2",boxShadow:"0 2px 12px rgba(0,0,0,0.04)",display:"flex",gap:16,alignItems:"center"}}>
+                  {s.logoPreview&&<img src={s.logoPreview} alt={s.businessName} style={{width:56,height:56,borderRadius:10,objectFit:"cover",flexShrink:0}} />}
+                  <div style={{flex:1}}>
+                    <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",marginBottom:4}}>{s.businessName||s.tradeName}</div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288"}}>{s.neighborhood&&`${s.neighborhood} · `}{s.city} — {s.state}</div>
+                    {s.description&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#7A7268",marginTop:6,lineHeight:1.5}}>{s.description.slice(0,120)}{s.description.length>120?"...":""}</div>}
+                  </div>
+                  {s.cnpjVerified&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#5BAA5B",background:"#5BAA5B15",padding:"4px 10px",borderRadius:20,flexShrink:0}}>✓ Verificado</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ══ LANDING ══════════════════════════════════════════════════════════ */}
       {screen==="landing"&&(
