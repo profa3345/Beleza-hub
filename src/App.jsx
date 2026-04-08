@@ -1,3 +1,4 @@
+import React from "react"
 // ─── FIREBASE IMPORTS ────────────────────────────────────────────────────────
 import { initializeApp }                        from "firebase/app";
 import { getFirestore, doc, setDoc, getDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
