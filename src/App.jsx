@@ -20,9 +20,9 @@ const FRAUD_RULES = [
 ];
 
 const PLAN_TYPES = [
-  { id:"salao",      label:"Salão de Beleza",        icon:"💇", desc:"Cadastre serviços, horários e equipe.", color:"#C9A96E" },
-  { id:"fornecedor", label:"Fornecedor / Revendedor", icon:"📦", desc:"Catálogo de produtos com estoque e preços.", color:"#79B8D4" },
-  { id:"ambos",      label:"Salão + Fornecedor",      icon:"✦",  desc:"Perfil completo: serviços e venda de produtos.", color:"#A67FC4" },
+  { id:"salao",      label:"Salão de Beleza",        icon:"💇", desc:"Ofereça serviços como corte, coloração, maquiagem e mais. Gerencie horários e equipe.", color:"#C9A96E" },
+  { id:"fornecedor", label:"Fornecedor / Revendedor", icon:"📦", desc:"Venda produtos para salões e consumidores. Catálogo com estoque, preços e SKU.", color:"#79B8D4" },
+  { id:"ambos",      label:"Salão + Fornecedor",      icon:"✦",  desc:"Perfil completo: presta serviços e também vende produtos. Duas fontes de receita.", color:"#A67FC4" },
 ];
 
 const REG_TYPES = [
@@ -723,9 +723,10 @@ function AdminPanel({ isAdmin, authUser, showToast }) {
 export default function BeautyRegister() {
   const [screen,        setScreen]       = useState("home");
   const [regType,       setRegType]      = useState(null);
-  const [searchQuery,   setSearchQuery]  = useState("");
-  const [searchResults, setSearchResults]= useState([]);
-  const [searching,     setSearching]    = useState(false);
+  const [searchQuery,    setSearchQuery]   = useState("");
+  const [searchCategory, setSearchCategory]= useState("");
+  const [searchResults,  setSearchResults] = useState([]);
+  const [searching,      setSearching]     = useState(false);
   const [accountType,   setAccountType]  = useState(null);
   const [step,          setStep]         = useState(1);
   const [formData,      dispatch]        = useReducer(formReducer,INITIAL_FORM);
@@ -863,8 +864,9 @@ export default function BeautyRegister() {
 
   // ── Busca (usa db e helpers importados no topo — sem import() dinâmico)
   const handleSearch = async () => {
-    const q = searchQuery.trim();
-    if (!q) return;
+    const q   = searchQuery.trim();
+    const cat = searchCategory;
+    if (!q && !cat) return;
     setSearching(true);
     try {
       const snap = await getDocs(query(collection(db,"establishments"),where("status","==","active")));
@@ -872,7 +874,10 @@ export default function BeautyRegister() {
       snap.forEach(d=>{
         const data=d.data();
         const loc=(data.city||"")+" "+(data.neighborhood||"")+" "+(data.state||"");
-        if(loc.toLowerCase().includes(q.toLowerCase())) results.push({id:d.id,...data});
+        const locMatch = !q || loc.toLowerCase().includes(q.toLowerCase());
+        const catServices = (data.services||[]).map(s=>(s.category||"").toLowerCase());
+        const catMatch = !cat || catServices.includes(cat.toLowerCase());
+        if(locMatch && catMatch) results.push({id:d.id,...data});
       });
       setSearchResults(results);
       setScreen("results");
@@ -1104,22 +1109,43 @@ export default function BeautyRegister() {
               <p style={{fontFamily:"'DM Sans',sans-serif",color:"#9A8F85",fontSize:"0.9rem",marginBottom:36,lineHeight:1.6}}>
                 Encontre salões, clínicas e profissionais verificados na sua cidade ou bairro.
               </p>
-              <div style={{display:"flex",gap:0,maxWidth:480,margin:"0 auto",borderRadius:10,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.3)"}}>
-                <input
-                  className="inp"
-                  style={{borderRadius:0,border:"none",fontSize:"0.9rem",padding:"14px 20px",flex:1}}
-                  placeholder="Cidade ou bairro... ex: Vitória, Jardim Camburi"
-                  value={searchQuery}
-                  onChange={e=>setSearchQuery(e.target.value)}
-                  onKeyDown={e=>{ if(e.key==="Enter") handleSearch(); }}
-                />
-                <button
-                  className="btn"
-                  style={{borderRadius:0,background:"#C9A96E",color:"#fff",padding:"14px 24px",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px",whiteSpace:"nowrap"}}
-                  onClick={handleSearch}
-                >
-                  {searching?"...":"Buscar"}
-                </button>
+              <div style={{display:"flex",flexDirection:"column",gap:12,maxWidth:560,margin:"0 auto"}}>
+                <div style={{display:"flex",gap:0,borderRadius:10,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.3)"}}>
+                  <input
+                    className="inp"
+                    style={{borderRadius:0,border:"none",fontSize:"0.9rem",padding:"14px 20px",flex:1}}
+                    placeholder="Cidade ou bairro... ex: Vitória, Jardim Camburi"
+                    value={searchQuery}
+                    onChange={e=>setSearchQuery(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==="Enter") handleSearch(); }}
+                  />
+                  <button
+                    className="btn"
+                    style={{borderRadius:0,background:"#C9A96E",color:"#fff",padding:"14px 24px",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px",whiteSpace:"nowrap"}}
+                    onClick={handleSearch}
+                  >
+                    {searching?"...":"Buscar"}
+                  </button>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <select
+                    className="inp"
+                    style={{flex:1,borderRadius:8,border:"1px solid rgba(255,255,255,0.15)",background:"rgba(255,255,255,0.08)",color:searchCategory?"#F7F5F0":"#9A8F85",fontSize:"0.82rem",padding:"10px 14px",backdropFilter:"blur(4px)"}}
+                    value={searchCategory}
+                    onChange={e=>setSearchCategory(e.target.value)}
+                  >
+                    <option value="" style={{background:"#2C2420"}}>🏷 Todas as categorias</option>
+                    {SERVICE_CATEGORIES.map(c=>{
+                      const icons={"Cabelo":"✂️","Unhas":"💅","Maquiagem":"💄","Skincare":"🧴","Massagem":"💆","Depilação":"🪒","Sobrancelha":"👁️","Barba":"🧔","Outros":"✨"};
+                      return <option key={c} value={c} style={{background:"#2C2420"}}>{icons[c]||"✨"} {c}</option>;
+                    })}
+                  </select>
+                  {(searchQuery||searchCategory)&&(
+                    <button className="btn" onClick={()=>{setSearchQuery("");setSearchCategory("");}} style={{padding:"10px 14px",borderRadius:8,background:"rgba(255,255,255,0.1)",color:"#9A8F85",fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",border:"1px solid rgba(255,255,255,0.1)",whiteSpace:"nowrap"}}>
+                      ✕ Limpar
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1147,7 +1173,7 @@ export default function BeautyRegister() {
             ← Voltar
           </button>
           <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.8rem",fontWeight:300,marginBottom:8}}>
-            Resultados para "{searchQuery}"
+            Resultados{searchQuery?` para "${searchQuery}`:""}{searchCategory?` · ${searchCategory}`:""}
           </h2>
           <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#9A9288",marginBottom:32}}>
             {searchResults.length} salão{searchResults.length!==1?"s":""} encontrado{searchResults.length!==1?"s":""}
@@ -1219,7 +1245,8 @@ export default function BeautyRegister() {
             <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2rem",fontWeight:300,textAlign:"center",marginBottom:32}}>O que você pode cadastrar</h2>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:20}}>
               {PLAN_TYPES.map((t,i)=>(
-                <div key={t.id} className="hov fade-up" onClick={()=>{setAccountType(t.id);setScreen("type");}} style={{background:"#fff",borderRadius:14,padding:"28px 24px",border:"1px solid #EDE9E2",boxShadow:"0 2px 12px rgba(0,0,0,0.05)",borderTop:`3px solid ${t.color}`,animationDelay:`${i*0.1}s`}}>
+                <div key={t.id} className="hov fade-up" onClick={()=>{setAccountType(t.id);setScreen("type");}} style={{background:t.id==="ambos"?"linear-gradient(160deg,#FAF7FF,#fff)":"#fff",borderRadius:14,padding:"28px 24px",border:"1px solid #EDE9E2",boxShadow:"0 2px 12px rgba(0,0,0,0.05)",borderTop:`3px solid ${t.color}`,animationDelay:`${i*0.1}s`,position:"relative",overflow:"hidden"}}>
+                  {t.id==="ambos"&&<div style={{position:"absolute",top:12,right:12,fontFamily:"'DM Sans',sans-serif",fontSize:"0.58rem",letterSpacing:"1.5px",color:"#A67FC4",background:"#A67FC415",padding:"3px 8px",borderRadius:20,border:"1px solid #A67FC430"}}>COMPLETO</div>}
                   <div style={{fontSize:"2rem",marginBottom:12}}>{t.icon}</div>
                   <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",fontWeight:400,marginBottom:8}}>{t.label}</h3>
                   <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#7A7268",lineHeight:1.6}}>{t.desc}</p>
@@ -1261,13 +1288,16 @@ export default function BeautyRegister() {
               <div style={{display:"flex",flexDirection:"column",gap:16,marginBottom:32}}>
                 {PLAN_TYPES.map(t=>(
                   <div key={t.id} onClick={()=>setAccountType(t.id)} style={{
-                    background:"#fff",borderRadius:14,padding:"24px",
+                    background: t.id==="ambos"?"linear-gradient(135deg,#FAF7FF 0%,#fff 100%)":"#fff",
+                    borderRadius:14,padding:"24px",
                     border:`2px solid ${accountType===t.id?t.color:"#EDE9E2"}`,
                     cursor:"pointer",transition:"all 0.22s",
                     boxShadow:accountType===t.id?`0 0 0 4px ${t.color}18`:"none",
                     display:"flex",alignItems:"center",gap:20,
                     transform:accountType===t.id?"translateY(-1px)":"none",
+                    position:"relative",overflow:"hidden",
                   }}>
+                    {t.id==="ambos"&&<div style={{position:"absolute",top:10,right:12,fontFamily:"'DM Sans',sans-serif",fontSize:"0.58rem",letterSpacing:"1.5px",color:"#A67FC4",background:"#A67FC415",padding:"3px 8px",borderRadius:20,border:"1px solid #A67FC430"}}>COMPLETO</div>}
                     <div style={{width:52,height:52,borderRadius:12,background:`${t.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.6rem",flexShrink:0}}>{t.icon}</div>
                     <div style={{flex:1}}>
                       <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",marginBottom:4}}>{t.label}</div>
