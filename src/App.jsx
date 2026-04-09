@@ -1,22 +1,10 @@
 import React from "react"
-// ─── FIREBASE IMPORTS ────────────────────────────────────────────────────────
-import { initializeApp }                        from "firebase/app";
-import { getFirestore, doc, setDoc, getDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged } from "firebase/auth";
+// ─── FIREBASE (importado de firebase.js — NÃO inicializar aqui) ───────────────
+import { db, auth } from "./firebase.js";
+import { doc, setDoc, getDoc, deleteDoc, serverTimestamp,
+         collection, query, where, getDocs, updateDoc } from "firebase/firestore";
+import { createUserWithEmailAndPassword, onAuthStateChanged } from "firebase/auth";
 import { useState, useRef, useEffect, useReducer, useCallback } from "react";
-
-// ─── FIREBASE CONFIG ─────────────────────────────────────────────────────────
-const firebaseConfig = {
-  apiKey:            "AIzaSyDyL0bxTfe7X2de_O-wbKn09feIIxi4TTs",
-  authDomain:        "beleza-hub.firebaseapp.com",
-  projectId:         "beleza-hub",
-  storageBucket:     "beleza-hub.firebasestorage.app",
-  messagingSenderId: "752625992317",
-  appId:             "1:752625992317:web:1fac364495bbb3c110e714",
-};
-const firebaseApp = initializeApp(firebaseConfig);
-const db   = getFirestore(firebaseApp);
-const auth = getAuth(firebaseApp);
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const SERVICE_CATEGORIES = ["Cabelo","Unhas","Maquiagem","Skincare","Massagem","Depilação","Sobrancelha","Barba","Outros"];
@@ -39,13 +27,18 @@ const PLAN_TYPES = [
 
 const REG_TYPES = [
   { id:"pj", label:"Pessoa Jurídica",        icon:"🏢", desc:"Tenho CNPJ — salão, clínica ou empresa registrada.", color:"#C9A96E" },
-  { id:"pf", label:"Profissional Autônomo", icon:"💆", desc:"Trabalho por conta própria, sem CNPJ.", color:"#79B8D4" },
+  { id:"pf", label:"Profissional Autônomo",  icon:"💆", desc:"Trabalho por conta própria, sem CNPJ.", color:"#79B8D4" },
 ];
 
-const EMAILJS_SERVICE_ID  = "SEU_SERVICE_ID";
-const EMAILJS_TEMPLATE_ID = "SEU_TEMPLATE_ID";
-const EMAILJS_PUBLIC_KEY  = "SUA_PUBLIC_KEY";
-const ADMIN_EMAIL = "seu-email-admin@gmail.com"; // ← troque pelo seu e-mail
+// ⚠️  ATENÇÃO — configure estas constantes em variáveis de ambiente antes do deploy.
+// Nunca exponha credenciais reais em repositórios públicos.
+const EMAILJS_SERVICE_ID  = import.meta.env.VITE_EMAILJS_SERVICE_ID  || "SEU_SERVICE_ID";
+const EMAILJS_TEMPLATE_ID = import.meta.env.VITE_EMAILJS_TEMPLATE_ID || "SEU_TEMPLATE_ID";
+const EMAILJS_PUBLIC_KEY  = import.meta.env.VITE_EMAILJS_PUBLIC_KEY  || "SUA_PUBLIC_KEY";
+
+// ⚠️  Em produção, a identificação de admin deve vir de Custom Claims no Firebase Auth
+// ou de um campo de perfil no Firestore — nunca por comparação de e-mail no front-end.
+const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL || "seu-email-admin@gmail.com";
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function uid() {
@@ -93,15 +86,12 @@ function passwordStrength(pw) {
 }
 
 // ─── FIREBASE HELPERS ────────────────────────────────────────────────────────
-
-// Salva rascunho no Firestore (sem senha, sem arquivos)
 async function saveDraftFS(userId, data) {
   const clean = { ...data };
   ["password","confirmPassword","cnpjDoc","addressProof","ownerDoc"].forEach(k => delete clean[k]);
   await setDoc(doc(db,"drafts",userId), { ...clean, _updatedAt: serverTimestamp() }, { merge:true });
 }
 
-// Carrega rascunho do Firestore
 async function loadDraftFS(userId) {
   const snap = await getDoc(doc(db,"drafts",userId));
   if (!snap.exists()) return null;
@@ -110,19 +100,14 @@ async function loadDraftFS(userId) {
   return data;
 }
 
-// Envia cadastro final para Firestore
 async function submitToFirestore(userId, formData, services, products, protocol) {
   const clean = { ...formData };
   ["password","confirmPassword","cnpjDoc","addressProof","ownerDoc"].forEach(k => delete clean[k]);
   await setDoc(doc(db,"establishments",userId), {
-    ...clean,
-    services,
-    products,
-    protocol,
-    status:    "pending_review",
+    ...clean, services, products, protocol,
+    status: "pending_review",
     createdAt: serverTimestamp(),
   });
-  // Remove rascunho
   try { await deleteDoc(doc(db,"drafts",userId)); } catch {}
 }
 
@@ -173,10 +158,571 @@ async function sendEmailOTP(toEmail, otpCode) {
   });
 }
 
+// ─── SMALL COMPONENTS ─────────────────────────────────────────────────────────
+function FormSection({title,icon,children}){return(<div><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:24}}><span style={{fontSize:"1.3rem"}}>{icon}</span><h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.5rem",fontWeight:300}}>{title}</h3></div><div style={{display:"flex",flexDirection:"column",gap:16}}>{children}</div></div>);}
+function Row2({children}){return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>{children}</div>;}
+function Field({label,error,children}){return(<div><label style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",letterSpacing:"0.5px",display:"block",marginBottom:6}}>{label}</label>{children}{error&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:4,animation:"fadeUp 0.2s ease"}}>⚠ {error}</div>}</div>);}
+function Hint({children,ok}){return(<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:ok?"#5BAA5B":"#9A9288",background:ok?"#5BAA5B10":"#F8F6F2",padding:"8px 12px",borderRadius:6,border:`1px solid ${ok?"#5BAA5B30":"#EDE9E2"}`,marginTop:4}}>{children}</div>);}
+function ImageUpload({preview,onChange,label}){const ref=useRef();return(<div onClick={()=>ref.current.click()} className="drop-zone" style={{height:120,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>{preview?<img src={preview} alt="preview" style={{maxHeight:"100%",maxWidth:"100%",objectFit:"cover",borderRadius:8}} />:<div style={{textAlign:"center"}}><div style={{fontSize:"1.5rem",marginBottom:6}}>📷</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.7rem",color:"#9A9288"}}>{label}</div></div>}<input ref={ref} type="file" accept="image/jpeg,image/png,image/webp" onChange={onChange} style={{display:"none"}} /></div>);}
+function DocUpload({file,onChange,label}){const ref=useRef();const isValidType=file?ALLOWED_DOC_TYPES.includes(file.type):true;return(<div onClick={()=>ref.current.click()} className="drop-zone" style={{padding:"18px",display:"flex",alignItems:"center",gap:12,borderColor:file&&!isValidType?"#D4735A":undefined}}>{file?<><div style={{width:36,height:36,borderRadius:8,background:isValidType?"#5BAA5B15":"#D4735A15",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.2rem",flexShrink:0}}>{isValidType?"✅":"❌"}</div><div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:isValidType?"#1A1715":"#D4735A"}}>{file.name}</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288"}}>{(file.size/1024).toFixed(0)} KB · {isValidType?"Formato aceito":"Inválido — use PDF, JPG ou PNG"}</div></div></>:<><div style={{fontSize:"1.5rem"}}>📄</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288"}}>{label}</div></>}<input ref={ref} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={onChange} style={{display:"none"}} /></div>);}
+function SectionHeader({title,icon,count,onAdd}){return(<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:"1.1rem"}}>{icon}</span><span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.3rem",fontWeight:400}}>{title}</span>{count>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.7rem",background:"#F8F6F2",color:"#9A9288",padding:"2px 8px",borderRadius:12,border:"1px solid #EDE9E2"}}>{count}</span>}</div><button onClick={onAdd} className="btn" style={{padding:"7px 16px",borderRadius:8,background:"#1A1715",color:"#F7F5F0",fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",letterSpacing:"1px"}}>+ ADICIONAR</button></div>);}
+function EmptyState({icon,text,sub}){return(<div style={{textAlign:"center",padding:"40px 24px",background:"#fff",borderRadius:12,border:"2px dashed #EDE9E2",marginBottom:16}}><div style={{fontSize:"2rem",marginBottom:8}}>{icon}</div><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#7A7268"}}>{text}</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#B0A898",marginTop:4}}>{sub}</div></div>);}
+
+// ─── SERVICE EDITOR ───────────────────────────────────────────────────────────
+function ServiceEditor({services,setServices,showToast}){
+  const EMPTY={name:"",category:"",duration:60,price:"",description:"",id:null};
+  const [adding,setAdding]=useState(false);
+  const [editId,setEditId]=useState(null);
+  const [form,setForm]=useState(EMPTY);
+  const resetForm=()=>{setAdding(false);setEditId(null);setForm(EMPTY);};
+  const edit=s=>{setForm({...s});setEditId(s.id);setAdding(true);};
+  const remove=id=>setServices(p=>p.filter(s=>s.id!==id));
+  const save=()=>{
+    if(!form.name||!form.price){showToast("Nome e preço obrigatórios","error");return;}
+    if(editId) setServices(p=>p.map(s=>s.id===editId?{...form}:s));
+    else setServices(p=>[...p,{...form,id:uid()}]);
+    resetForm(); showToast(editId?"Serviço atualizado ✓":"Serviço adicionado ✓","success");
+  };
+  return(
+    <div style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginBottom:20}}>
+      <SectionHeader title="Serviços" icon="✂️" count={services.length} onAdd={()=>{resetForm();setAdding(true);}} />
+      {services.length===0&&!adding&&<EmptyState icon="✂️" text="Nenhum serviço ainda" sub="Adicione os serviços do seu salão" />}
+      <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:adding?16:0}}>
+        {services.map(s=>(
+          <div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 14px",background:"#F8F6F2",borderRadius:10,border:"1px solid #EDE9E2"}}>
+            <div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.8rem",fontWeight:500,color:"#1A1715"}}>{s.name}</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#9A9288",marginTop:2}}>{s.category} · {s.duration}min · R$ {parseFloat(s.price).toFixed(2)}</div>
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>edit(s)} className="btn" style={{padding:"5px 10px",borderRadius:5,border:"1px solid #EDE9E2",background:"#F8F6F2",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#7A7268"}}>Editar</button>
+              <button onClick={()=>remove(s.id)} className="btn" style={{padding:"5px 10px",borderRadius:5,border:"1px solid #F4D0C8",background:"#FFF5F3",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#D4735A"}}>Remover</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {adding&&(
+        <div className="fade-up" style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginTop:8}}>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",letterSpacing:"2px",color:"#9A9288",marginBottom:16}}>{editId?"EDITAR":"NOVO SERVIÇO"}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+            <Field label="Nome *"><input className="inp" value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="Ex: Corte Feminino" /></Field>
+            <Field label="Categoria"><select className="inp" value={form.category} onChange={e=>setForm(p=>({...p,category:e.target.value}))}><option value="">Selecione</option>{SERVICE_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+            <Field label="Duração (min)"><input className="inp" type="number" min="5" step="5" value={form.duration} onChange={e=>setForm(p=>({...p,duration:e.target.value}))} /></Field>
+            <Field label="Preço (R$) *"><input className="inp" type="number" step="0.01" min="0" value={form.price} onChange={e=>setForm(p=>({...p,price:e.target.value}))} placeholder="0,00" /></Field>
+          </div>
+          <Field label="Descrição"><textarea className="inp" rows={2} value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} style={{resize:"vertical"}} /></Field>
+          <div style={{display:"flex",gap:10,marginTop:16}}>
+            <button onClick={resetForm} className="btn" style={{flex:1,padding:"10px",borderRadius:8,border:"1px solid #DDD8CE",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>Cancelar</button>
+            <button onClick={save} className="btn" style={{flex:2,padding:"10px",borderRadius:8,background:"#C9A96E",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",letterSpacing:"1px"}}>SALVAR</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── PRODUCT EDITOR ───────────────────────────────────────────────────────────
+function ProductEditor({products,setProducts,showToast}){
+  const EMPTY={name:"",brand:"",category:"",sku:"",price:"",discount:"",stock:"",description:"",photoPreview:null,id:null};
+  const [adding,setAdding]=useState(false);
+  const [editId,setEditId]=useState(null);
+  const [form,setForm]=useState(EMPTY);
+  const fileRef=useRef();
+  const resetForm=()=>{setAdding(false);setEditId(null);setForm(EMPTY);};
+  const edit=p=>{setForm({...p});setEditId(p.id);setAdding(true);};
+  const remove=id=>setProducts(p=>p.filter(pr=>pr.id!==id));
+  const handlePhoto=e=>{
+    const f=e.target.files[0];if(!f)return;
+    if(!validateFileType(f,ALLOWED_IMAGE_TYPES)){showToast("Formato inválido","error");return;}
+    if(f.size>5*1024*1024){showToast("Máx 5MB","error");return;}
+    const reader=new FileReader();reader.onload=ev=>setForm(p=>({...p,photoPreview:ev.target.result}));reader.readAsDataURL(f);
+  };
+  const save=()=>{
+    if(!form.name||!form.price){showToast("Nome e preço obrigatórios","error");return;}
+    if(editId) setProducts(p=>p.map(pr=>pr.id===editId?{...form}:pr));
+    else setProducts(p=>[...p,{...form,id:uid()}]);
+    resetForm(); showToast(editId?"Produto atualizado ✓":"Produto adicionado ✓","success");
+  };
+  return(
+    <div style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginBottom:20}}>
+      <SectionHeader title="Produtos" icon="📦" count={products.length} onAdd={()=>{resetForm();setAdding(true);}} />
+      {products.length===0&&!adding&&<EmptyState icon="📦" text="Nenhum produto ainda" sub="Adicione os produtos que você vende" />}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:12,marginBottom:adding?16:0}}>
+        {products.map(p=>(
+          <div key={p.id} style={{background:"#F8F6F2",borderRadius:10,border:"1px solid #EDE9E2",overflow:"hidden"}}>
+            {p.photoPreview&&<div style={{height:80,overflow:"hidden"}}><img src={p.photoPreview} alt={p.name} style={{width:"100%",height:"100%",objectFit:"cover"}} /></div>}
+            <div style={{padding:"10px"}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",fontWeight:500,color:"#1A1715",marginBottom:2}}>{p.name}</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:8}}>{p.brand&&`${p.brand} · `}R$ {parseFloat(p.price).toFixed(2)}</div>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>edit(p)} className="btn" style={{flex:1,padding:"5px",borderRadius:5,border:"1px solid #EDE9E2",background:"#F8F6F2",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#7A7268"}}>Editar</button>
+                <button onClick={()=>remove(p.id)} className="btn" style={{flex:1,padding:"5px",borderRadius:5,border:"1px solid #F4D0C8",background:"#FFF5F3",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#D4735A"}}>Remover</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {adding&&(
+        <div className="fade-up" style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginTop:8}}>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",letterSpacing:"2px",color:"#9A9288",marginBottom:16}}>{editId?"EDITAR":"NOVO PRODUTO"}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+            <Field label="Nome *"><input className="inp" value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="Ex: Shampoo Hidra" /></Field>
+            <Field label="Marca"><input className="inp" value={form.brand} onChange={e=>setForm(p=>({...p,brand:e.target.value}))} placeholder="Ex: L'Oréal" /></Field>
+            <Field label="Categoria"><select className="inp" value={form.category} onChange={e=>setForm(p=>({...p,category:e.target.value}))}><option value="">Selecione</option>{PRODUCT_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+            <Field label="SKU"><input className="inp" value={form.sku} onChange={e=>setForm(p=>({...p,sku:e.target.value}))} placeholder="Código interno" /></Field>
+            <Field label="Preço (R$) *"><input className="inp" type="number" step="0.01" min="0" value={form.price} onChange={e=>setForm(p=>({...p,price:e.target.value}))} placeholder="0,00" /></Field>
+            <Field label="Estoque"><input className="inp" type="number" min="0" value={form.stock} onChange={e=>setForm(p=>({...p,stock:e.target.value}))} placeholder="0" /></Field>
+          </div>
+          <Field label="Foto">
+            <div onClick={()=>fileRef.current.click()} className="drop-zone" style={{padding:"16px",height:form.photoPreview?120:70,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
+              {form.photoPreview?<img src={form.photoPreview} alt="preview" style={{maxHeight:"100%",maxWidth:"100%",objectFit:"contain",borderRadius:8}} />:<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288"}}>📷 Clique para adicionar foto</span>}
+            </div>
+            <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={handlePhoto} style={{display:"none"}} />
+          </Field>
+          <div style={{display:"flex",gap:10,marginTop:16}}>
+            <button onClick={resetForm} className="btn" style={{flex:1,padding:"10px",borderRadius:8,border:"1px solid #DDD8CE",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>Cancelar</button>
+            <button onClick={save} className="btn" style={{flex:2,padding:"10px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",letterSpacing:"1px"}}>SALVAR</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── FORM PF (autônomo) — componente próprio, sem IIFE ───────────────────────
+function FormPF({ showToast, showPass, setShowPass, showConfirmPass, setShowConfirmPass, onSuccess }) {
+  const [pfData,    setPfData]    = useState(INITIAL_FORM_PF);
+  const [pfStep,    setPfStep]    = useState(1);
+  const [pfErrors,  setPfErrors]  = useState({});
+  const [pfOTP,     setPfOTP]     = useState("");
+  const [pfSending, setPfSending] = useState(false);
+  const [pfSubmitting, setPfSubmitting] = useState(false);
+  const docRef = useRef();
+  const setPf  = (k,v) => setPfData(p=>({...p,[k]:v}));
+
+  const sendOTP = async () => {
+    if(!validateEmail(pfData.email)){setPfErrors(e=>({...e,email:"E-mail inválido"}));return;}
+    setPfSending(true);
+    const otp = generateOTP(); setPfOTP(otp);
+    try { await sendEmailOTP(pfData.email,otp); showToast(`Código enviado para ${pfData.email}`,"success"); }
+    catch { showToast(`[DEMO] Código: ${otp}`,"info"); }
+    setPfSending(false);
+  };
+
+  const checkOTP = () => {
+    if(pfData.emailCode===pfOTP){ setPf("emailVerified",true); showToast("E-mail verificado ✓","success"); }
+    else showToast("Código incorreto","error");
+  };
+
+  const handleDoc = e => {
+    const f=e.target.files[0]; if(!f) return;
+    if(!validateFileType(f,ALLOWED_DOC_TYPES)){showToast("Use PDF, JPG ou PNG","error");return;}
+    if(f.size>5*1024*1024){showToast("Máx 5MB","error");return;}
+    setPf("ownerDoc",f); setPf("docUploaded",true); showToast("Documento enviado ✓","success");
+  };
+
+  const validatePfStep = () => {
+    const e={};
+    if(pfStep===1){
+      if(!pfData.professionalName) e.professionalName="Nome obrigatório";
+      if(!pfData.specialties)      e.specialties="Informe ao menos uma especialidade";
+      if(!validateCPF(pfData.cpf)) e.cpf="CPF inválido";
+      if(!validateEmail(pfData.email)) e.email="E-mail inválido";
+      if(!pfData.phone)            e.phone="Telefone obrigatório";
+      if(!pfData.city)             e.city="Cidade obrigatória";
+    }
+    if(pfStep===2){
+      if(!pfData.emailVerified) e.emailVerified="Confirme seu e-mail";
+      if(!pfData.docUploaded)   e.docUploaded="Envie uma foto do seu documento";
+    }
+    if(pfStep===3){
+      const pw=pfData.password;
+      if(pw.length<8)                 e.password="Mínimo 8 caracteres";
+      if(!/[A-Z]/.test(pw))           e.password="Inclua ao menos uma maiúscula";
+      if(!/[0-9]/.test(pw))           e.password="Inclua ao menos um número";
+      if(pw!==pfData.confirmPassword) e.confirmPassword="Senhas não conferem";
+      if(!pfData.acceptTerms)         e.acceptTerms="Aceite os termos";
+      if(!pfData.acceptPrivacy)       e.acceptPrivacy="Aceite a política de privacidade";
+    }
+    setPfErrors(e); return Object.keys(e).length===0;
+  };
+
+  const submitPF = async () => {
+    if(!validatePfStep()) return;
+    setPfSubmitting(true);
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, pfData.email, pfData.password);
+      const clean = {...pfData};
+      delete clean.password; delete clean.confirmPassword; delete clean.ownerDoc; delete clean.emailCode;
+      await setDoc(doc(db,"professionals",cred.user.uid),{
+        ...clean, regType:"pf", status:"pending_review",
+        protocol:`BH-PF-${uid().slice(0,8).toUpperCase()}`,
+        createdAt: serverTimestamp(),
+      });
+      onSuccess();
+    } catch(err) {
+      if(err.code==="auth/email-already-in-use") showToast("E-mail já cadastrado","error");
+      else showToast("Erro ao salvar. Tente novamente.","error");
+    } finally { setPfSubmitting(false); }
+  };
+
+  const pwS = passwordStrength(pfData.password);
+
+  return (
+    <div style={{maxWidth:620,margin:"0 auto",padding:"32px 24px"}}>
+      {/* Progress */}
+      <div style={{marginBottom:32}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288"}}>Etapa {pfStep} de 3</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#79B8D4"}}>{Math.round((pfStep/3)*100)}% concluído</span>
+        </div>
+        <div className="score-bar" style={{marginBottom:10,height:4}}>
+          <div className="score-fill" style={{width:`${(pfStep/3)*100}%`,background:"linear-gradient(90deg,#79B8D4,#A8D4E8)"}} />
+        </div>
+        <div style={{display:"flex",gap:4}}>
+          {["Seus dados","Verificação","Acesso"].map((label,i)=>{
+            const n=i+1,done=n<pfStep,active=n===pfStep;
+            return(<div key={n} className="step-pill" style={{flex:1,textAlign:"center",background:active?"#79B8D4":done?"#79B8D415":"#E8E3DA",color:active?"#fff":done?"#79B8D4":"#B0A898",border:`1px solid ${active?"#79B8D4":done?"#79B8D440":"transparent"}`}}>{done?"✓":n} {label}</div>);
+          })}
+        </div>
+      </div>
+
+      {/* ETAPA 1 — Dados */}
+      {pfStep===1&&(
+        <div className="slide-in" style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+          <FormSection title="Seus dados profissionais" icon="💆">
+            <Field label="Nome completo *" error={pfErrors.professionalName}>
+              <input className={`inp${pfErrors.professionalName?" err":""}`} value={pfData.professionalName} onChange={e=>setPf("professionalName",e.target.value)} placeholder="Como você aparece para os clientes" />
+            </Field>
+            <Field label="Especialidades *" error={pfErrors.specialties}>
+              <input className={`inp${pfErrors.specialties?" err":""}`} value={pfData.specialties} onChange={e=>setPf("specialties",e.target.value)} placeholder="Ex: Manicure, Cabeleireira, Designer de sobrancelha" />
+            </Field>
+            <Row2>
+              <Field label="CPF *" error={pfErrors.cpf}>
+                <input className={`inp${pfErrors.cpf?" err":""}`} value={pfData.cpf} onChange={e=>setPf("cpf",fmtCPF(e.target.value))} placeholder="000.000.000-00" maxLength={14} />
+              </Field>
+              <Field label="Telefone / WhatsApp *" error={pfErrors.phone}>
+                <input className={`inp${pfErrors.phone?" err":""}`} value={pfData.phone} onChange={e=>setPf("phone",fmtPhone(e.target.value))} placeholder="(00) 00000-0000" maxLength={15} />
+              </Field>
+            </Row2>
+            <Field label="E-mail *" error={pfErrors.email}>
+              <input className={`inp${pfErrors.email?" err":""}`} value={pfData.email} onChange={e=>setPf("email",e.target.value)} placeholder="seu@email.com" type="email" />
+            </Field>
+            <Row2>
+              <Field label="Cidade *" error={pfErrors.city}>
+                <input className={`inp${pfErrors.city?" err":""}`} value={pfData.city} onChange={e=>setPf("city",e.target.value)} placeholder="Ex: Vitória" />
+              </Field>
+              <Field label="Bairro">
+                <input className="inp" value={pfData.neighborhood} onChange={e=>setPf("neighborhood",e.target.value)} placeholder="Ex: Jardim Camburi" />
+              </Field>
+            </Row2>
+            <Field label="Mini bio (opcional)">
+              <textarea className="inp" rows={3} value={pfData.description} onChange={e=>setPf("description",e.target.value)} placeholder="Fale um pouco sobre você e sua experiência..." style={{resize:"vertical"}} />
+            </Field>
+          </FormSection>
+        </div>
+      )}
+
+      {/* ETAPA 2 — Verificação */}
+      {pfStep===2&&(
+        <div className="slide-in" style={{display:"flex",flexDirection:"column",gap:16}}>
+          <div style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+            <FormSection title="Confirme seu e-mail" icon="📧">
+              <Hint ok={pfData.emailVerified}>{pfData.emailVerified?"✓ E-mail confirmado!":"Enviaremos um código de 6 dígitos para "+pfData.email}</Hint>
+              {!pfData.emailVerified&&(
+                <>
+                  <button className="btn" onClick={sendOTP} disabled={pfSending} style={{padding:"10px 20px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem"}}>
+                    {pfSending?"Enviando...":"Enviar código"}
+                  </button>
+                  <Row2>
+                    <Field label="Código recebido" error={pfErrors.emailVerified}>
+                      <input className="inp" value={pfData.emailCode} onChange={e=>setPf("emailCode",e.target.value)} placeholder="000000" maxLength={6} />
+                    </Field>
+                    <div style={{display:"flex",alignItems:"flex-end"}}>
+                      <button className="btn" onClick={checkOTP} style={{width:"100%",padding:"11px",borderRadius:8,background:"#1A1715",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem"}}>Verificar</button>
+                    </div>
+                  </Row2>
+                </>
+              )}
+            </FormSection>
+          </div>
+          <div style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+            <FormSection title="Foto do documento" icon="🪪">
+              <Hint ok={pfData.docUploaded}>{pfData.docUploaded?"✓ Documento enviado! Revisaremos em até 48h.":"Envie uma foto do seu RG ou CNH (frente). Isso garante a segurança da plataforma."}</Hint>
+              {!pfData.docUploaded&&(
+                <>
+                  <div onClick={()=>docRef.current.click()} className="drop-zone" style={{padding:"24px",display:"flex",alignItems:"center",gap:12}}>
+                    <span style={{fontSize:"1.5rem"}}>🪪</span>
+                    <div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#1A1715",marginBottom:2}}>Clique para enviar RG ou CNH</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.7rem",color:"#9A9288"}}>JPG, PNG ou PDF · máx 5MB</div>
+                    </div>
+                  </div>
+                  <input ref={docRef} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={handleDoc} style={{display:"none"}} />
+                  {pfErrors.docUploaded&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:4}}>⚠ {pfErrors.docUploaded}</div>}
+                </>
+              )}
+            </FormSection>
+          </div>
+        </div>
+      )}
+
+      {/* ETAPA 3 — Acesso */}
+      {pfStep===3&&(
+        <div className="slide-in" style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
+          <FormSection title="Crie sua senha" icon="🔐">
+            <Field label="Senha *" error={pfErrors.password}>
+              <div className="pass-wrap">
+                <input className={`inp${pfErrors.password?" err":""}`} type={showPass?"text":"password"} value={pfData.password} onChange={e=>setPf("password",e.target.value)} placeholder="Mínimo 8 caracteres" />
+                <span className="pass-eye" onClick={()=>setShowPass(p=>!p)}>{showPass?"🙈":"👁"}</span>
+              </div>
+              {pfData.password&&(<><div className="score-bar" style={{marginTop:6}}><div className="score-fill" style={{width:`${pwS.score}%`,background:pwS.color}} /></div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:pwS.color,marginTop:3}}>{pwS.label}</div></>)}
+            </Field>
+            <Field label="Confirmar senha *" error={pfErrors.confirmPassword}>
+              <div className="pass-wrap">
+                <input className={`inp${pfErrors.confirmPassword?" err":""}`} type={showConfirmPass?"text":"password"} value={pfData.confirmPassword} onChange={e=>setPf("confirmPassword",e.target.value)} placeholder="Repita a senha" />
+                <span className="pass-eye" onClick={()=>setShowConfirmPass(p=>!p)}>{showConfirmPass?"🙈":"👁"}</span>
+              </div>
+            </Field>
+            <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:8}}>
+              {[
+                {k:"acceptTerms",label:"Li e aceito os Termos de Uso",err:pfErrors.acceptTerms},
+                {k:"acceptPrivacy",label:"Li e aceito a Política de Privacidade",err:pfErrors.acceptPrivacy},
+              ].map(({k,label,err})=>(
+                <div key={k}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setPf(k,!pfData[k])}>
+                    <div className={`check-box${pfData[k]?" on":""}`}>{pfData[k]&&<span style={{color:"#fff",fontSize:"0.7rem"}}>✓</span>}</div>
+                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>{label}</span>
+                  </div>
+                  {err&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:3,marginLeft:30}}>⚠ {err}</div>}
+                </div>
+              ))}
+            </div>
+          </FormSection>
+        </div>
+      )}
+
+      {/* Botões de navegação */}
+      <div style={{display:"flex",gap:12,marginTop:24}}>
+        {pfStep>1&&<button className="btn" onClick={()=>setPfStep(p=>p-1)} style={{flex:1,padding:"13px",borderRadius:8,border:"1px solid #DDD8CE",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#7A7268"}}>← Voltar</button>}
+        {pfStep<3&&<button className="btn" onClick={()=>{if(validatePfStep())setPfStep(p=>p+1);window.scrollTo(0,0);}} style={{flex:2,padding:"13px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px"}}>CONTINUAR →</button>}
+        {pfStep===3&&<button className="btn" onClick={submitPF} disabled={pfSubmitting} style={{flex:2,padding:"13px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px"}}>{pfSubmitting?<><span className="spinner"/>Enviando...</>:"FINALIZAR CADASTRO"}</button>}
+      </div>
+    </div>
+  );
+}
+
+// ─── ADMIN PANEL — componente próprio, sem IIFE ───────────────────────────────
+function AdminPanel({ isAdmin, authUser, showToast }) {
+  if (!isAdmin) return (
+    <div style={{maxWidth:480,margin:"80px auto",padding:"40px 24px",textAlign:"center"}}>
+      <div style={{fontSize:"3rem",marginBottom:16}}>🔒</div>
+      <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.8rem",fontWeight:300,marginBottom:8}}>Acesso restrito</h2>
+      <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288"}}>Faça login com a conta de administrador.</p>
+    </div>
+  );
+
+  const [adminTab,   setAdminTab]   = useState("pending");
+  const [records,    setRecords]    = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [selected,   setSelected]   = useState(null);
+  const [actionNote, setActionNote] = useState("");
+  const [acting,     setActing]     = useState(false);
+
+  useEffect(()=>{
+    setLoading(true);
+    const status = adminTab==="pending"?"pending_review": adminTab==="active"?"active":"rejected";
+    Promise.all([
+      getDocs(query(collection(db,"establishments"),where("status","==",status))),
+      getDocs(query(collection(db,"professionals"),  where("status","==",status))),
+    ]).then(([estSnap,profSnap])=>{
+      const all=[];
+      estSnap.forEach(d=>all.push({id:d.id,_type:"pj",...d.data()}));
+      profSnap.forEach(d=>all.push({id:d.id,_type:"pf",...d.data()}));
+      all.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+      setRecords(all); setLoading(false);
+    }).catch(()=>setLoading(false));
+  },[adminTab]);
+
+  const act = async (record, newStatus) => {
+    setActing(true);
+    try {
+      const col = record._type==="pf"?"professionals":"establishments";
+      await updateDoc(doc(db,col,record.id),{
+        status: newStatus,
+        reviewNote: actionNote,
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: authUser.email,
+      });
+      setRecords(r=>r.filter(x=>x.id!==record.id));
+      setSelected(null); setActionNote(""); setActing(false);
+      showToast(newStatus==="active"?"✓ Aprovado e publicado!":"Cadastro rejeitado.","success");
+    } catch {
+      showToast("Erro ao processar. Tente novamente.","error");
+      setActing(false);
+    }
+  };
+
+  const tabs=[
+    {id:"pending", label:"Pendentes",  color:"#E8B86D"},
+    {id:"active",  label:"Aprovados",  color:"#5BAA5B"},
+    {id:"rejected",label:"Rejeitados", color:"#D4735A"},
+  ];
+
+  return(
+    <div style={{maxWidth:900,margin:"0 auto",padding:"32px 24px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:28}}>
+        <span style={{fontSize:"1.4rem"}}>🛡</span>
+        <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2rem",fontWeight:300}}>Painel de Revisão</h1>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:8,marginBottom:24,borderBottom:"1px solid #EDE9E2",paddingBottom:0}}>
+        {tabs.map(t=>(
+          <button key={t.id} className="btn" onClick={()=>{setAdminTab(t.id);setSelected(null);}} style={{
+            padding:"10px 20px",borderRadius:"8px 8px 0 0",border:"1px solid #EDE9E2",borderBottom:"none",
+            background:adminTab===t.id?"#fff":"#F8F6F2",
+            fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",
+            color:adminTab===t.id?t.color:"#9A9288",
+            fontWeight:adminTab===t.id?500:400,
+            marginBottom:adminTab===t.id?"-1px":"0",
+          }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {loading&&<div style={{textAlign:"center",padding:"40px",fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288"}}>Carregando...</div>}
+
+      {!loading&&records.length===0&&(
+        <div style={{textAlign:"center",padding:"60px 24px",background:"#fff",borderRadius:14,border:"2px dashed #EDE9E2"}}>
+          <div style={{fontSize:"2rem",marginBottom:8}}>✅</div>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#7A7268"}}>Nenhum cadastro {adminTab==="pending"?"pendente":adminTab==="active"?"aprovado":"rejeitado"}</div>
+        </div>
+      )}
+
+      <div style={{display:"grid",gridTemplateColumns:selected?"1fr 380px":"1fr",gap:20,alignItems:"start"}}>
+        {/* Lista */}
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          {records.map(r=>(
+            <div key={r.id} onClick={()=>setSelected(selected?.id===r.id?null:r)} className="hov" style={{
+              background:"#fff",borderRadius:12,padding:"16px 20px",border:`1.5px solid ${selected?.id===r.id?"#7B3FBE":"#EDE9E2"}`,
+              cursor:"pointer",display:"flex",gap:14,alignItems:"center",
+            }}>
+              <div style={{width:44,height:44,borderRadius:10,background:r._type==="pf"?"#79B8D415":"#C9A96E15",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.4rem",flexShrink:0}}>
+                {r._type==="pf"?"💆":"🏢"}
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#1A1715",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                  {r._type==="pf"?r.professionalName:r.businessName||r.tradeName}
+                </div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288",marginTop:2}}>
+                  {r._type==="pf"?"Autônomo":"Estabelecimento"} · {r.city}{r.state?`, ${r.state}`:""} · {r.email}
+                </div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end",flexShrink:0}}>
+                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",padding:"3px 8px",borderRadius:10,
+                  background:r._type==="pf"?"#79B8D415":"#C9A96E15",
+                  color:r._type==="pf"?"#4A8FAA":"#9A6B30"}}>
+                  {r._type==="pf"?"CPF":"CNPJ"}
+                </span>
+                {r.cnpjVerified&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#5BAA5B"}}>✓ Verificado</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Detalhe */}
+        {selected&&(
+          <div className="fade-up" style={{background:"#fff",borderRadius:14,border:"1px solid #EDE9E2",padding:"24px",position:"sticky",top:80}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+              <div>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.3rem",color:"#1A1715"}}>
+                  {selected._type==="pf"?selected.professionalName:selected.businessName}
+                </div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288",marginTop:2}}>
+                  Protocolo: {selected.protocol||selected.id.slice(0,8).toUpperCase()}
+                </div>
+              </div>
+              <button className="btn" onClick={()=>setSelected(null)} style={{color:"#9A9288",fontSize:"1.1rem",background:"transparent"}}>✕</button>
+            </div>
+
+            {/* Dados principais */}
+            <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:16}}>
+              {[
+                ["Tipo",        selected._type==="pf"?"Profissional Autônomo":"Estabelecimento"],
+                ["E-mail",      selected.email],
+                ["Telefone",    selected.phone],
+                ["Cidade",      `${selected.city||"—"}${selected.state?`, ${selected.state}`:""}`],
+                selected._type==="pj"?["CNPJ", selected.cnpj||"—"]:["CPF", selected.cpf||"—"],
+                selected._type==="pj"?["CNPJ verificado", selected.cnpjVerified?"✓ Sim":"✗ Não"]:null,
+                ["E-mail verificado", selected.emailVerified?"✓ Sim":"✗ Não"],
+              ].filter(Boolean).map(([k,v])=>(
+                <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #F0EDE6"}}>
+                  <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288"}}>{k}</span>
+                  <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#1A1715",fontWeight:500,textAlign:"right",maxWidth:"55%"}}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            {selected.description&&(
+              <div style={{background:"#F8F6F2",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:4}}>DESCRIÇÃO</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#1A1715",lineHeight:1.5}}>{selected.description}</div>
+              </div>
+            )}
+
+            {selected._type==="pf"&&selected.specialties&&(
+              <div style={{background:"#79B8D410",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#4A8FAA",marginBottom:4}}>ESPECIALIDADES</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#1A1715"}}>{selected.specialties}</div>
+              </div>
+            )}
+
+            <div style={{background:"#F8F6F2",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:6}}>DOCUMENTO</div>
+              {selected.docUploaded
+                ? <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#5BAA5B"}}>✓ Documento enviado — revisar no Firebase Storage</div>
+                : <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#D4735A"}}>✗ Nenhum documento enviado</div>
+              }
+            </div>
+
+            {adminTab==="pending"&&(
+              <>
+                <div style={{marginBottom:12}}>
+                  <label style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",display:"block",marginBottom:6}}>Nota de revisão (opcional)</label>
+                  <textarea className="inp" rows={2} value={actionNote} onChange={e=>setActionNote(e.target.value)} placeholder="Ex: Documento ilegível, solicitar reenvio..." style={{resize:"vertical",fontSize:"0.78rem"}} />
+                </div>
+                <div style={{display:"flex",gap:10}}>
+                  <button className="btn" onClick={()=>act(selected,"rejected")} disabled={acting} style={{flex:1,padding:"10px",borderRadius:8,background:"#FFF5F3",border:"1px solid #F4D0C8",fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#D4735A"}}>
+                    ✗ Rejeitar
+                  </button>
+                  <button className="btn" onClick={()=>act(selected,"active")} disabled={acting} style={{flex:2,padding:"10px",borderRadius:8,background:"#5BAA5B",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",letterSpacing:"0.5px"}}>
+                    {acting?<><span className="spinner"/>Processando...</>:"✓ Aprovar e publicar"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {adminTab!=="pending"&&(
+              <div style={{background:adminTab==="active"?"#5BAA5B10":"#D4735A10",borderRadius:8,padding:"10px 12px"}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:adminTab==="active"?"#5BAA5B":"#D4735A"}}>
+                  {adminTab==="active"?"✓ Aprovado":"✗ Rejeitado"} · {selected.reviewedBy||"admin"}
+                </div>
+                {selected.reviewNote&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",marginTop:4}}>{selected.reviewNote}</div>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function BeautyRegister() {
   const [screen,        setScreen]       = useState("home");
-  const [regType,       setRegType]      = useState(null);  // "pj" | "pf"
+  const [regType,       setRegType]      = useState(null);
   const [searchQuery,   setSearchQuery]  = useState("");
   const [searchResults, setSearchResults]= useState([]);
   const [searching,     setSearching]    = useState(false);
@@ -198,12 +744,12 @@ export default function BeautyRegister() {
   const [showConfirmPass,setShowConfirmPass]=useState(false);
   const [stepDir,       setStepDir]      = useState(1);
   const [isSubmitting,  setIsSubmitting] = useState(false);
-  const [authUser,      setAuthUser]     = useState(null);   // usuário Firebase logado
+  const [authUser,      setAuthUser]     = useState(null);
   const [isAdmin,       setIsAdmin]      = useState(false);
-  const [authLoading,   setAuthLoading]  = useState(true);   // aguardando onAuthStateChanged
-  const [draftLoading,  setDraftLoading] = useState(false);  // carregando rascunho do Firestore
+  const [authLoading,   setAuthLoading]  = useState(true);
+  const [draftLoading,  setDraftLoading] = useState(false);
   const [hasDraft,      setHasDraft]     = useState(false);
-  const [saveStatus,    setSaveStatus]   = useState("");      // "saving" | "saved" | ""
+  const [saveStatus,    setSaveStatus]   = useState("");
 
   const emailOTPRef  = useRef("");
   const phoneOTPRef  = useRef("");
@@ -217,6 +763,7 @@ export default function BeautyRegister() {
     setToast({msg,type});
     toastTimerRef.current = setTimeout(()=>setToast(null),3500);
   },[]);
+
   useEffect(()=>()=>{
     if(toastTimerRef.current) clearTimeout(toastTimerRef.current);
     if(saveTimerRef.current)  clearTimeout(saveTimerRef.current);
@@ -231,12 +778,9 @@ export default function BeautyRegister() {
       setIsAdmin(user?.email === ADMIN_EMAIL);
       setAuthLoading(false);
       if (user) {
-        // Tenta carregar rascunho ao logar
         setDraftLoading(true);
         loadDraftFS(user.uid)
-          .then(draft=>{
-            if (draft && Object.keys(draft).some(k=>draft[k])) setHasDraft(true);
-          })
+          .then(draft=>{ if(draft&&Object.keys(draft).some(k=>draft[k])) setHasDraft(true); })
           .catch(()=>{})
           .finally(()=>setDraftLoading(false));
       }
@@ -254,7 +798,7 @@ export default function BeautyRegister() {
     finally { setDraftLoading(false); }
   };
 
-  // ── Auto-save no Firestore com debounce de 1.5s
+  // ── Auto-save com debounce
   useEffect(()=>{
     if (!authUser) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -279,7 +823,7 @@ export default function BeautyRegister() {
     setSecurityScore(s);
   },[formData.cnpjVerified,formData.emailVerified,formData.phoneVerified,formData.ownerDoc,formData.addressProof]);
 
-  // ── CNPJ real (publica.cnpj.ws)
+  // ── CNPJ (usa db importado, sem reimport dinâmico)
   const verifyCNPJ = async () => {
     if (!validateCNPJ(formData.cnpj)) { showToast("CNPJ inválido — verifique os dígitos","error"); return; }
     setVerifyingCNPJ(true); setCnpjError(""); setCnpjData(null);
@@ -304,7 +848,7 @@ export default function BeautyRegister() {
     } finally { setVerifyingCNPJ(false); }
   };
 
-  // ── CEP autocomplete
+  // ── CEP autocomplete (usa db importado, sem reimport)
   const prevCEP = useRef("");
   useEffect(()=>{
     const raw = formData.cep.replace(/\D/g,"");
@@ -317,7 +861,26 @@ export default function BeautyRegister() {
     }
   },[formData.cep]);
 
-  // ── Enviar OTP
+  // ── Busca (usa db e helpers importados no topo — sem import() dinâmico)
+  const handleSearch = async () => {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setSearching(true);
+    try {
+      const snap = await getDocs(query(collection(db,"establishments"),where("status","==","active")));
+      const results=[];
+      snap.forEach(d=>{
+        const data=d.data();
+        const loc=(data.city||"")+" "+(data.neighborhood||"")+" "+(data.state||"");
+        if(loc.toLowerCase().includes(q.toLowerCase())) results.push({id:d.id,...data});
+      });
+      setSearchResults(results);
+      setScreen("results");
+    } catch { setSearchResults([]); setScreen("results"); }
+    finally { setSearching(false); }
+  };
+
+  // ── OTP
   const sendVerification = async (type) => {
     setSendingCode(true);
     const otp = generateOTP();
@@ -382,32 +945,23 @@ export default function BeautyRegister() {
   const nextStep = () => { if(validateStep()){setStepDir(1);setStep(p=>p+1);window.scrollTo(0,0);} };
   const prevStep = () => { setStepDir(-1);setStep(p=>p-1);setErrors({});window.scrollTo(0,0); };
 
-  // ── Submit: cria Auth + salva no Firestore
+  // ── Submit PJ
   const handleSubmit = async () => {
     if (!validateStep()) return;
     setIsSubmitting(true);
     if (!protocolRef.current) protocolRef.current=`BH-${uid().slice(0,8).toUpperCase()}`;
     try {
       let userId = authUser?.uid;
-
       if (!userId) {
-        // Cria conta no Firebase Auth
         const cred = await createUserWithEmailAndPassword(auth,formData.email,formData.password);
         userId = cred.user.uid;
       }
-
-      // Salva cadastro completo no Firestore
       await submitToFirestore(userId,formData,services,products,protocolRef.current);
       setScreen("review");
     } catch(err) {
-      if (err.code==="auth/email-already-in-use") {
-        showToast("E-mail já cadastrado. Tente fazer login.","error");
-      } else if (err.code==="auth/weak-password") {
-        showToast("Senha muito fraca (mínimo 6 caracteres Firebase)","error");
-      } else {
-        showToast("Erro ao salvar cadastro. Tente novamente.","error");
-        console.error(err);
-      }
+      if (err.code==="auth/email-already-in-use") showToast("E-mail já cadastrado. Tente fazer login.","error");
+      else if (err.code==="auth/weak-password")   showToast("Senha muito fraca (mínimo 6 caracteres Firebase)","error");
+      else { showToast("Erro ao salvar cadastro. Tente novamente.","error"); console.error(err); }
     } finally { setIsSubmitting(false); }
   };
 
@@ -423,7 +977,6 @@ export default function BeautyRegister() {
   const totalSteps    = 5;
   const pwStrength    = passwordStrength(formData.password);
 
-  // ── Loading Firebase Auth
   if (authLoading) return (
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#F8F6F2"}}>
       <div style={{textAlign:"center"}}>
@@ -491,7 +1044,7 @@ export default function BeautyRegister() {
         </div>
       )}
 
-      {/* DRAFT BANNER (só se logado e tiver rascunho) */}
+      {/* DRAFT BANNER */}
       {hasDraft&&screen==="landing"&&authUser&&(
         <div className="fade-up" style={{background:"#FFF8ED",borderBottom:"1px solid #F0D99A",padding:"10px 24px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
           <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A6020"}}>
@@ -538,10 +1091,9 @@ export default function BeautyRegister() {
         </div>
       </nav>
 
-      {/* ══ HOME — BUSCA DE SALÕES ══════════════════════════════════════════ */}
+      {/* ══ HOME ══════════════════════════════════════════════════════════════ */}
       {screen==="home"&&(
         <div className="fade-up">
-          {/* Hero */}
           <div style={{background:"linear-gradient(160deg,#1A1715 0%,#2C2420 60%,#1A1715 100%)",padding:"80px 24px 64px",textAlign:"center",position:"relative",overflow:"hidden"}}>
             <div style={{position:"absolute",inset:0,backgroundImage:"radial-gradient(circle at 20% 60%,rgba(201,169,110,0.10) 0%,transparent 50%),radial-gradient(circle at 80% 20%,rgba(201,169,110,0.07) 0%,transparent 40%)"}} />
             <div style={{position:"relative",maxWidth:600,margin:"0 auto"}}>
@@ -552,7 +1104,6 @@ export default function BeautyRegister() {
               <p style={{fontFamily:"'DM Sans',sans-serif",color:"#9A8F85",fontSize:"0.9rem",marginBottom:36,lineHeight:1.6}}>
                 Encontre salões, clínicas e profissionais verificados na sua cidade ou bairro.
               </p>
-              {/* Campo de busca */}
               <div style={{display:"flex",gap:0,maxWidth:480,margin:"0 auto",borderRadius:10,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.3)"}}>
                 <input
                   className="inp"
@@ -560,65 +1111,25 @@ export default function BeautyRegister() {
                   placeholder="Cidade ou bairro... ex: Vitória, Jardim Camburi"
                   value={searchQuery}
                   onChange={e=>setSearchQuery(e.target.value)}
-                  onKeyDown={e=>{
-                    if(e.key==="Enter"){
-                      const q=searchQuery.trim();
-                      if(!q)return;
-                      setSearching(true);
-                      const { collection, query, where, getDocs } = window._firestore||{};
-                      import("firebase/firestore").then(({collection,query,where,getDocs,getFirestore})=>{
-                        const db2=getFirestore();
-                        getDocs(query(collection(db2,"establishments"),where("status","==","active"))).then(snap=>{
-                          const results=[];
-                          snap.forEach(d=>{
-                            const data=d.data();
-                            const loc=(data.city||"")+" "+(data.neighborhood||"")+" "+(data.state||"");
-                            if(loc.toLowerCase().includes(q.toLowerCase())) results.push({id:d.id,...data});
-                          });
-                          setSearchResults(results);
-                          setSearching(false);
-                          setScreen("results");
-                        }).catch(()=>{setSearchResults([]);setSearching(false);setScreen("results");});
-                      });
-                    }
-                  }}
+                  onKeyDown={e=>{ if(e.key==="Enter") handleSearch(); }}
                 />
                 <button
                   className="btn"
                   style={{borderRadius:0,background:"#C9A96E",color:"#fff",padding:"14px 24px",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px",whiteSpace:"nowrap"}}
-                  onClick={()=>{
-                    const q=searchQuery.trim();
-                    if(!q)return;
-                    setSearching(true);
-                    import("firebase/firestore").then(({collection,query,where,getDocs,getFirestore})=>{
-                      const db2=getFirestore();
-                      getDocs(query(collection(db2,"establishments"),where("status","==","active"))).then(snap=>{
-                        const results=[];
-                        snap.forEach(d=>{
-                          const data=d.data();
-                          const loc=(data.city||"")+" "+(data.neighborhood||"")+" "+(data.state||"");
-                          if(loc.toLowerCase().includes(q.toLowerCase())) results.push({id:d.id,...data});
-                        });
-                        setSearchResults(results);
-                        setSearching(false);
-                        setScreen("results");
-                      }).catch(()=>{setSearchResults([]);setSearching(false);setScreen("results");});
-                    });
-                  }}
+                  onClick={handleSearch}
                 >
                   {searching?"...":"Buscar"}
                 </button>
               </div>
             </div>
           </div>
-          {/* Categorias de serviço */}
           <div style={{maxWidth:800,margin:"0 auto",padding:"48px 24px"}}>
             <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",letterSpacing:"4px",color:"#9A9288",textAlign:"center",marginBottom:24}}>CATEGORIAS POPULARES</p>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:12}}>
               {SERVICE_CATEGORIES.map((cat,i)=>{
                 const icons={"Cabelo":"✂️","Unhas":"💅","Maquiagem":"💄","Skincare":"🧴","Massagem":"💆","Depilação":"🪒","Sobrancelha":"👁️","Barba":"🧔","Outros":"✨"};
                 return(
-                  <div key={cat} className="hov fade-up" onClick={()=>{setSearchQuery(cat);}} style={{textAlign:"center",padding:"16px 8px",background:"#fff",borderRadius:12,border:"1px solid #EDE9E2",animationDelay:`${i*0.05}s`,cursor:"pointer"}}>
+                  <div key={cat} className="hov fade-up" onClick={()=>setSearchQuery(cat)} style={{textAlign:"center",padding:"16px 8px",background:"#fff",borderRadius:12,border:"1px solid #EDE9E2",animationDelay:`${i*0.05}s`,cursor:"pointer"}}>
                     <div style={{fontSize:"1.6rem",marginBottom:6}}>{icons[cat]||"✨"}</div>
                     <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#1A1715"}}>{cat}</div>
                   </div>
@@ -629,7 +1140,7 @@ export default function BeautyRegister() {
         </div>
       )}
 
-      {/* ══ RESULTADOS DA BUSCA ══════════════════════════════════════════════ */}
+      {/* ══ RESULTADOS DA BUSCA ═══════════════════════════════════════════════ */}
       {screen==="results"&&(
         <div className="fade-up" style={{maxWidth:800,margin:"0 auto",padding:"40px 24px"}}>
           <button className="btn" onClick={()=>setScreen("home")} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288",background:"transparent",marginBottom:24}}>
@@ -720,40 +1231,20 @@ export default function BeautyRegister() {
         </div>
       )}
 
-      {/* ══ TYPE SELECTION ═══════════════════════════════════════════════════ */}
+      {/* ══ TYPE SELECTION ════════════════════════════════════════════════════ */}
       {screen==="type"&&(
         <div className="slide-in" style={{maxWidth:720,margin:"0 auto",padding:"48px 24px"}}>
-
-          {/* PASSO 1: PJ ou PF */}
           {!regType&&(
             <>
               <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2.2rem",fontWeight:300,marginBottom:8,textAlign:"center"}}>Como você atua?</h2>
               <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288",textAlign:"center",marginBottom:40}}>Isso define o tipo de cadastro e as verificações necessárias</p>
               <div style={{display:"flex",flexDirection:"column",gap:16,marginBottom:32}}>
                 {REG_TYPES.map(t=>(
-                  <div key={t.id} onClick={()=>setRegType(t.id)} className="hov" style={{
-                    background:"#fff",borderRadius:14,padding:"24px",
-                    border:`2px solid ${t.color}`,cursor:"pointer",
-                    display:"flex",alignItems:"center",gap:20,
-                  }}>
+                  <div key={t.id} onClick={()=>setRegType(t.id)} className="hov" style={{background:"#fff",borderRadius:14,padding:"24px",border:`2px solid ${t.color}`,cursor:"pointer",display:"flex",alignItems:"center",gap:20}}>
                     <div style={{width:56,height:56,borderRadius:12,background:`${t.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.8rem",flexShrink:0}}>{t.icon}</div>
                     <div style={{flex:1}}>
                       <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.3rem",marginBottom:4,color:"#1A1715"}}>{t.label}</div>
                       <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>{t.desc}</div>
-                      {t.id==="pf"&&(
-                        <div style={{marginTop:8,display:"flex",gap:8,flexWrap:"wrap"}}>
-                          {["CPF validado","E-mail confirmado","Foto do documento"].map(v=>(
-                            <span key={v} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#5BAA5B",background:"#5BAA5B10",padding:"3px 8px",borderRadius:10}}>✓ {v}</span>
-                          ))}
-                        </div>
-                      )}
-                      {t.id==="pj"&&(
-                        <div style={{marginTop:8,display:"flex",gap:8,flexWrap:"wrap"}}>
-                          {["CNPJ verificado","E-mail + telefone","Documentos"].map(v=>(
-                            <span key={v} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#C9A96E",background:"#C9A96E10",padding:"3px 8px",borderRadius:10}}>✓ {v}</span>
-                          ))}
-                        </div>
-                      )}
                     </div>
                     <div style={{fontSize:"1.2rem",color:t.color}}>→</div>
                   </div>
@@ -762,7 +1253,6 @@ export default function BeautyRegister() {
             </>
           )}
 
-          {/* PASSO 2: tipo de negócio (só PJ) */}
           {regType==="pj"&&(
             <>
               <button className="btn" onClick={()=>setRegType(null)} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288",background:"transparent",marginBottom:24}}>← Voltar</button>
@@ -795,7 +1285,6 @@ export default function BeautyRegister() {
             </>
           )}
 
-          {/* PASSO 2: cadastro autônomo direto */}
           {regType==="pf"&&(
             <>
               <button className="btn" onClick={()=>setRegType(null)} style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288",background:"transparent",marginBottom:24}}>← Voltar</button>
@@ -824,222 +1313,19 @@ export default function BeautyRegister() {
         </div>
       )}
 
-      {/* ══ FORM AUTÔNOMO (PF) ══════════════════════════════════════════════ */}
-      {screen==="form_pf"&&(()=>{
-        const [pfData,setPfData]=React.useState(INITIAL_FORM_PF);
-        const [pfStep,setPfStep]=React.useState(1);
-        const [pfErrors,setPfErrors]=React.useState({});
-        const [pfOTP,setPfOTP]=React.useState("");
-        const [pfSending,setPfSending]=React.useState(false);
-        const [pfSubmitting,setPfSubmitting]=React.useState(false);
-        const docRef=React.useRef();
-        const setPf=(k,v)=>setPfData(p=>({...p,[k]:v}));
-        const sendOTP=async()=>{
-          if(!validateEmail(pfData.email)){setPfErrors(e=>({...e,email:"E-mail inválido"}));return;}
-          setPfSending(true);
-          const otp=generateOTP(); setPfOTP(otp);
-          try{await sendEmailOTP(pfData.email,otp);showToast(`Código enviado para ${pfData.email}`,"success");}
-          catch{showToast(`[DEMO] Código: ${otp}`,"info");}
-          setPfSending(false);
-        };
-        const checkOTP=()=>{
-          if(pfData.emailCode===pfOTP){setPf("emailVerified",true);showToast("E-mail verificado ✓","success");}
-          else showToast("Código incorreto","error");
-        };
-        const handleDoc=e=>{
-          const f=e.target.files[0];if(!f)return;
-          if(!validateFileType(f,ALLOWED_DOC_TYPES)){showToast("Use PDF, JPG ou PNG","error");return;}
-          if(f.size>5*1024*1024){showToast("Máx 5MB","error");return;}
-          setPf("ownerDoc",f); setPf("docUploaded",true); showToast("Documento enviado ✓","success");
-        };
-        const validatePfStep=()=>{
-          const e={};
-          if(pfStep===1){
-            if(!pfData.professionalName) e.professionalName="Nome obrigatório";
-            if(!pfData.specialties)      e.specialties="Informe ao menos uma especialidade";
-            if(!validateCPF(pfData.cpf)) e.cpf="CPF inválido";
-            if(!validateEmail(pfData.email)) e.email="E-mail inválido";
-            if(!pfData.phone)            e.phone="Telefone obrigatório";
-            if(!pfData.city)             e.city="Cidade obrigatória";
-          }
-          if(pfStep===2){
-            if(!pfData.emailVerified) e.emailVerified="Confirme seu e-mail";
-            if(!pfData.docUploaded)   e.docUploaded="Envie uma foto do seu documento";
-          }
-          if(pfStep===3){
-            const pw=pfData.password;
-            if(pw.length<8)                     e.password="Mínimo 8 caracteres";
-            if(!/[A-Z]/.test(pw))               e.password="Inclua ao menos uma maiúscula";
-            if(!/[0-9]/.test(pw))               e.password="Inclua ao menos um número";
-            if(pw!==pfData.confirmPassword)     e.confirmPassword="Senhas não conferem";
-            if(!pfData.acceptTerms)             e.acceptTerms="Aceite os termos";
-            if(!pfData.acceptPrivacy)           e.acceptPrivacy="Aceite a política de privacidade";
-          }
-          setPfErrors(e); return Object.keys(e).length===0;
-        };
-        const submitPF=async()=>{
-          if(!validatePfStep())return;
-          setPfSubmitting(true);
-          try{
-            const cred=await createUserWithEmailAndPassword(auth,pfData.email,pfData.password);
-            const clean={...pfData}; delete clean.password; delete clean.confirmPassword; delete clean.ownerDoc; delete clean.emailCode;
-            await setDoc(doc(db,"professionals",cred.user.uid),{
-              ...clean, regType:"pf", status:"pending_review",
-              protocol:`BH-PF-${uid().slice(0,8).toUpperCase()}`,
-              createdAt:serverTimestamp(),
-            });
-            setScreen("review");
-          }catch(err){
-            if(err.code==="auth/email-already-in-use") showToast("E-mail já cadastrado","error");
-            else showToast("Erro ao salvar. Tente novamente.","error");
-          }finally{setPfSubmitting(false);}
-        };
-        const pwS=passwordStrength(pfData.password);
-        return(
-          <div style={{maxWidth:620,margin:"0 auto",padding:"32px 24px"}}>
-            {/* Progress */}
-            <div style={{marginBottom:32}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288"}}>Etapa {pfStep} de 3</span>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#79B8D4"}}>{Math.round((pfStep/3)*100)}% concluído</span>
-              </div>
-              <div className="score-bar" style={{marginBottom:10,height:4}}>
-                <div className="score-fill" style={{width:`${(pfStep/3)*100}%`,background:"linear-gradient(90deg,#79B8D4,#A8D4E8)"}} />
-              </div>
-              <div style={{display:"flex",gap:4}}>
-                {["Seus dados","Verificação","Acesso"].map((label,i)=>{
-                  const n=i+1,done=n<pfStep,active=n===pfStep;
-                  return(<div key={n} className="step-pill" style={{flex:1,textAlign:"center",background:active?"#79B8D4":done?"#79B8D415":"#E8E3DA",color:active?"#fff":done?"#79B8D4":"#B0A898",border:`1px solid ${active?"#79B8D4":done?"#79B8D440":"transparent"}`}}>{done?"✓":n} {label}</div>);
-                })}
-              </div>
-            </div>
+      {/* ══ FORM AUTÔNOMO (PF) ════════════════════════════════════════════════ */}
+      {screen==="form_pf"&&(
+        <FormPF
+          showToast={showToast}
+          showPass={showPass}
+          setShowPass={setShowPass}
+          showConfirmPass={showConfirmPass}
+          setShowConfirmPass={setShowConfirmPass}
+          onSuccess={()=>setScreen("review")}
+        />
+      )}
 
-            {/* ETAPA 1 — Dados */}
-            {pfStep===1&&(
-              <div className="slide-in" style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
-                <FormSection title="Seus dados profissionais" icon="💆">
-                  <Field label="Nome completo *" error={pfErrors.professionalName}>
-                    <input className={`inp${pfErrors.professionalName?" err":""}`} value={pfData.professionalName} onChange={e=>setPf("professionalName",e.target.value)} placeholder="Como você aparece para os clientes" />
-                  </Field>
-                  <Field label="Especialidades *" error={pfErrors.specialties}>
-                    <input className={`inp${pfErrors.specialties?" err":""}`} value={pfData.specialties} onChange={e=>setPf("specialties",e.target.value)} placeholder="Ex: Manicure, Cabeleireira, Designer de sobrancelha" />
-                  </Field>
-                  <Row2>
-                    <Field label="CPF *" error={pfErrors.cpf}>
-                      <input className={`inp${pfErrors.cpf?" err":""}`} value={pfData.cpf} onChange={e=>setPf("cpf",fmtCPF(e.target.value))} placeholder="000.000.000-00" maxLength={14} />
-                    </Field>
-                    <Field label="Telefone / WhatsApp *" error={pfErrors.phone}>
-                      <input className={`inp${pfErrors.phone?" err":""}`} value={pfData.phone} onChange={e=>setPf("phone",fmtPhone(e.target.value))} placeholder="(00) 00000-0000" maxLength={15} />
-                    </Field>
-                  </Row2>
-                  <Field label="E-mail *" error={pfErrors.email}>
-                    <input className={`inp${pfErrors.email?" err":""}`} value={pfData.email} onChange={e=>setPf("email",e.target.value)} placeholder="seu@email.com" type="email" />
-                  </Field>
-                  <Row2>
-                    <Field label="Cidade *" error={pfErrors.city}>
-                      <input className={`inp${pfErrors.city?" err":""}`} value={pfData.city} onChange={e=>setPf("city",e.target.value)} placeholder="Ex: Vitória" />
-                    </Field>
-                    <Field label="Bairro">
-                      <input className="inp" value={pfData.neighborhood} onChange={e=>setPf("neighborhood",e.target.value)} placeholder="Ex: Jardim Camburi" />
-                    </Field>
-                  </Row2>
-                  <Field label="Mini bio (opcional)">
-                    <textarea className="inp" rows={3} value={pfData.description} onChange={e=>setPf("description",e.target.value)} placeholder="Fale um pouco sobre você e sua experiência..." style={{resize:"vertical"}} />
-                  </Field>
-                </FormSection>
-              </div>
-            )}
-
-            {/* ETAPA 2 — Verificação */}
-            {pfStep===2&&(
-              <div className="slide-in" style={{display:"flex",flexDirection:"column",gap:16}}>
-                <div style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
-                  <FormSection title="Confirme seu e-mail" icon="📧">
-                    <Hint ok={pfData.emailVerified}>{pfData.emailVerified?"✓ E-mail confirmado!":"Enviaremos um código de 6 dígitos para "+pfData.email}</Hint>
-                    {!pfData.emailVerified&&(
-                      <>
-                        <button className="btn" onClick={sendOTP} disabled={pfSending} style={{padding:"10px 20px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem"}}>
-                          {pfSending?"Enviando...":"Enviar código"}
-                        </button>
-                        <Row2>
-                          <Field label="Código recebido" error={pfErrors.emailVerified}>
-                            <input className="inp" value={pfData.emailCode} onChange={e=>setPf("emailCode",e.target.value)} placeholder="000000" maxLength={6} />
-                          </Field>
-                          <div style={{display:"flex",alignItems:"flex-end"}}>
-                            <button className="btn" onClick={checkOTP} style={{width:"100%",padding:"11px",borderRadius:8,background:"#1A1715",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem"}}>Verificar</button>
-                          </div>
-                        </Row2>
-                      </>
-                    )}
-                  </FormSection>
-                </div>
-                <div style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
-                  <FormSection title="Foto do documento" icon="🪪">
-                    <Hint ok={pfData.docUploaded}>{pfData.docUploaded?"✓ Documento enviado! Revisaremos em até 48h.":"Envie uma foto do seu RG ou CNH (frente). Isso garante a segurança da plataforma."}</Hint>
-                    {!pfData.docUploaded&&(
-                      <>
-                        <div onClick={()=>docRef.current.click()} className="drop-zone" style={{padding:"24px",display:"flex",alignItems:"center",gap:12}}>
-                          <span style={{fontSize:"1.5rem"}}>🪪</span>
-                          <div>
-                            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#1A1715",marginBottom:2}}>Clique para enviar RG ou CNH</div>
-                            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.7rem",color:"#9A9288"}}>JPG, PNG ou PDF · máx 5MB</div>
-                          </div>
-                        </div>
-                        <input ref={docRef} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={handleDoc} style={{display:"none"}} />
-                        {pfErrors.docUploaded&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:4}}>⚠ {pfErrors.docUploaded}</div>}
-                      </>
-                    )}
-                  </FormSection>
-                </div>
-              </div>
-            )}
-
-            {/* ETAPA 3 — Acesso */}
-            {pfStep===3&&(
-              <div className="slide-in" style={{background:"#fff",borderRadius:14,padding:"28px",border:"1px solid #EDE9E2"}}>
-                <FormSection title="Crie sua senha" icon="🔐">
-                  <Field label="Senha *" error={pfErrors.password}>
-                    <div className="pass-wrap">
-                      <input className={`inp${pfErrors.password?" err":""}`} type={showPass?"text":"password"} value={pfData.password} onChange={e=>setPf("password",e.target.value)} placeholder="Mínimo 8 caracteres" />
-                      <span className="pass-eye" onClick={()=>setShowPass(p=>!p)}>{showPass?"🙈":"👁"}</span>
-                    </div>
-                    {pfData.password&&(<><div className="score-bar" style={{marginTop:6}}><div className="score-fill" style={{width:`${pwS.score}%`,background:pwS.color}} /></div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:pwS.color,marginTop:3}}>{pwS.label}</div></>)}
-                  </Field>
-                  <Field label="Confirmar senha *" error={pfErrors.confirmPassword}>
-                    <div className="pass-wrap">
-                      <input className={`inp${pfErrors.confirmPassword?" err":""}`} type={showConfirmPass?"text":"password"} value={pfData.confirmPassword} onChange={e=>setPf("confirmPassword",e.target.value)} placeholder="Repita a senha" />
-                      <span className="pass-eye" onClick={()=>setShowConfirmPass(p=>!p)}>{showConfirmPass?"🙈":"👁"}</span>
-                    </div>
-                  </Field>
-                  <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:8}}>
-                    {[
-                      {k:"acceptTerms",label:"Li e aceito os Termos de Uso",err:pfErrors.acceptTerms},
-                      {k:"acceptPrivacy",label:"Li e aceito a Política de Privacidade",err:pfErrors.acceptPrivacy},
-                    ].map(({k,label,err})=>(
-                      <div key={k}>
-                        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setPf(k,!pfData[k])}>
-                          <div className={`check-box${pfData[k]?" on":""}`}>{pfData[k]&&<span style={{color:"#fff",fontSize:"0.7rem"}}>✓</span>}</div>
-                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>{label}</span>
-                        </div>
-                        {err&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:3,marginLeft:30}}>⚠ {err}</div>}
-                      </div>
-                    ))}
-                  </div>
-                </FormSection>
-              </div>
-            )}
-
-            {/* Botões de navegação */}
-            <div style={{display:"flex",gap:12,marginTop:24}}>
-              {pfStep>1&&<button className="btn" onClick={()=>setPfStep(p=>p-1)} style={{flex:1,padding:"13px",borderRadius:8,border:"1px solid #DDD8CE",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#7A7268"}}>← Voltar</button>}
-              {pfStep<3&&<button className="btn" onClick={()=>{if(validatePfStep())setPfStep(p=>p+1);window.scrollTo(0,0);}} style={{flex:2,padding:"13px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px"}}>CONTINUAR →</button>}
-              {pfStep===3&&<button className="btn" onClick={submitPF} disabled={pfSubmitting} style={{flex:2,padding:"13px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.85rem",letterSpacing:"1px"}}>{pfSubmitting?<><span className="spinner"/>Enviando...</>:"FINALIZAR CADASTRO"}</button>}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ══ FORM ════════════════════════════════════════════════════════════ */}
+      {/* ══ FORM PJ ══════════════════════════════════════════════════════════ */}
       {screen==="form"&&(
         <div style={{maxWidth:720,margin:"0 auto",padding:"32px 24px"}}>
           {/* Progress */}
@@ -1323,7 +1609,6 @@ export default function BeautyRegister() {
                   </div>
                 ))}
               </div>
-              {/* Firebase Auth info */}
               <div style={{background:"#F0F7FF",border:"1px solid #C0D8F0",borderRadius:10,padding:"12px 16px",marginBottom:16,display:"flex",gap:10}}>
                 <span>☁️</span>
                 <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#2A5080",lineHeight:1.6}}>
@@ -1355,7 +1640,7 @@ export default function BeautyRegister() {
         </div>
       )}
 
-      {/* ══ REVIEW ═══════════════════════════════════════════════════════════ */}
+      {/* ══ REVIEW ════════════════════════════════════════════════════════════ */}
       {screen==="review"&&(
         <div className="fade-up" style={{maxWidth:580,margin:"0 auto",padding:"64px 24px",textAlign:"center"}}>
           <div style={{fontSize:"4rem",marginBottom:24,animation:"popIn 0.4s ease"}}>🎉</div>
@@ -1429,348 +1714,12 @@ export default function BeautyRegister() {
           {needsProducts&&<ProductEditor products={products} setProducts={setProducts} showToast={showToast} />}
         </div>
       )}
-    </div>
-  );
-}
 
-// ─── SERVICE EDITOR ───────────────────────────────────────────────────────────
-function ServiceEditor({services,setServices,showToast}){
-  const EMPTY={name:"",category:"",duration:60,price:"",description:"",id:null};
-  const [adding,setAdding]=useState(false);
-  const [editId,setEditId]=useState(null);
-  const [form,setForm]=useState(EMPTY);
-  const resetForm=()=>{setAdding(false);setEditId(null);setForm(EMPTY);};
-  const edit=s=>{setForm({...s});setEditId(s.id);setAdding(true);};
-  const remove=id=>setServices(p=>p.filter(s=>s.id!==id));
-  const save=()=>{
-    if(!form.name||!form.price){showToast("Nome e preço obrigatórios","error");return;}
-    if(editId) setServices(p=>p.map(s=>s.id===editId?{...form}:s));
-    else setServices(p=>[...p,{...form,id:uid()}]);
-    resetForm(); showToast(editId?"Serviço atualizado ✓":"Serviço adicionado ✓","success");
-  };
-  return(
-    <div style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginBottom:20}}>
-      <SectionHeader title="Serviços" icon="✂️" count={services.length} onAdd={()=>{resetForm();setAdding(true);}} />
-      {services.length===0&&!adding&&<EmptyState icon="✂️" text="Nenhum serviço ainda" sub="Adicione os serviços do seu salão" />}
-      <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:adding?16:0}}>
-        {services.map(s=>(
-          <div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 14px",background:"#F8F6F2",borderRadius:10,border:"1px solid #EDE9E2"}}>
-            <div>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.8rem",fontWeight:500,color:"#1A1715"}}>{s.name}</div>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#9A9288",marginTop:2}}>{s.category} · {s.duration}min · R$ {parseFloat(s.price).toFixed(2)}</div>
-            </div>
-            <div style={{display:"flex",gap:6}}>
-              <button onClick={()=>edit(s)} className="btn" style={{padding:"5px 10px",borderRadius:5,border:"1px solid #EDE9E2",background:"#F8F6F2",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#7A7268"}}>Editar</button>
-              <button onClick={()=>remove(s.id)} className="btn" style={{padding:"5px 10px",borderRadius:5,border:"1px solid #F4D0C8",background:"#FFF5F3",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#D4735A"}}>Remover</button>
-            </div>
-          </div>
-        ))}
-      </div>
-      {adding&&(
-        <div className="fade-up" style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginTop:8}}>
-          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",letterSpacing:"2px",color:"#9A9288",marginBottom:16}}>{editId?"EDITAR":"NOVO SERVIÇO"}</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-            <Field label="Nome *"><input className="inp" value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="Ex: Corte Feminino" /></Field>
-            <Field label="Categoria"><select className="inp" value={form.category} onChange={e=>setForm(p=>({...p,category:e.target.value}))}><option value="">Selecione</option>{SERVICE_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
-            <Field label="Duração (min)"><input className="inp" type="number" min="5" step="5" value={form.duration} onChange={e=>setForm(p=>({...p,duration:e.target.value}))} /></Field>
-            <Field label="Preço (R$) *"><input className="inp" type="number" step="0.01" min="0" value={form.price} onChange={e=>setForm(p=>({...p,price:e.target.value}))} placeholder="0,00" /></Field>
-          </div>
-          <Field label="Descrição"><textarea className="inp" rows={2} value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} style={{resize:"vertical"}} /></Field>
-          <div style={{display:"flex",gap:10,marginTop:16}}>
-            <button onClick={resetForm} className="btn" style={{flex:1,padding:"10px",borderRadius:8,border:"1px solid #DDD8CE",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>Cancelar</button>
-            <button onClick={save} className="btn" style={{flex:2,padding:"10px",borderRadius:8,background:"#C9A96E",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",letterSpacing:"1px"}}>SALVAR</button>
-          </div>
-        </div>
+      {/* ══ ADMIN PANEL ═══════════════════════════════════════════════════════ */}
+      {screen==="admin"&&(
+        <AdminPanel isAdmin={isAdmin} authUser={authUser} showToast={showToast} />
       )}
+
     </div>
   );
 }
-
-// ─── PRODUCT EDITOR ───────────────────────────────────────────────────────────
-function ProductEditor({products,setProducts,showToast}){
-  const EMPTY={name:"",brand:"",category:"",sku:"",price:"",discount:"",stock:"",description:"",photoPreview:null,id:null};
-  const [adding,setAdding]=useState(false);
-  const [editId,setEditId]=useState(null);
-  const [form,setForm]=useState(EMPTY);
-  const fileRef=useRef();
-  const resetForm=()=>{setAdding(false);setEditId(null);setForm(EMPTY);};
-  const edit=p=>{setForm({...p});setEditId(p.id);setAdding(true);};
-  const remove=id=>setProducts(p=>p.filter(pr=>pr.id!==id));
-  const handlePhoto=e=>{
-    const f=e.target.files[0];if(!f)return;
-    if(!validateFileType(f,ALLOWED_IMAGE_TYPES)){showToast("Formato inválido","error");return;}
-    if(f.size>5*1024*1024){showToast("Máx 5MB","error");return;}
-    const reader=new FileReader();reader.onload=ev=>setForm(p=>({...p,photoPreview:ev.target.result}));reader.readAsDataURL(f);
-  };
-  const save=()=>{
-    if(!form.name||!form.price){showToast("Nome e preço obrigatórios","error");return;}
-    if(editId) setProducts(p=>p.map(pr=>pr.id===editId?{...form}:pr));
-    else setProducts(p=>[...p,{...form,id:uid()}]);
-    resetForm(); showToast(editId?"Produto atualizado ✓":"Produto adicionado ✓","success");
-  };
-  return(
-    <div style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginBottom:20}}>
-      <SectionHeader title="Produtos" icon="📦" count={products.length} onAdd={()=>{resetForm();setAdding(true);}} />
-      {products.length===0&&!adding&&<EmptyState icon="📦" text="Nenhum produto ainda" sub="Adicione os produtos que você vende" />}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:12,marginBottom:adding?16:0}}>
-        {products.map(p=>(
-          <div key={p.id} style={{background:"#F8F6F2",borderRadius:10,border:"1px solid #EDE9E2",overflow:"hidden"}}>
-            {p.photoPreview&&<div style={{height:80,overflow:"hidden"}}><img src={p.photoPreview} alt={p.name} style={{width:"100%",height:"100%",objectFit:"cover"}} /></div>}
-            <div style={{padding:"10px"}}>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",fontWeight:500,color:"#1A1715",marginBottom:2}}>{p.name}</div>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:8}}>{p.brand&&`${p.brand} · `}R$ {parseFloat(p.price).toFixed(2)}</div>
-              <div style={{display:"flex",gap:6}}>
-                <button onClick={()=>edit(p)} className="btn" style={{flex:1,padding:"5px",borderRadius:5,border:"1px solid #EDE9E2",background:"#F8F6F2",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#7A7268"}}>Editar</button>
-                <button onClick={()=>remove(p.id)} className="btn" style={{flex:1,padding:"5px",borderRadius:5,border:"1px solid #F4D0C8",background:"#FFF5F3",fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#D4735A"}}>Remover</button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-      {adding&&(
-        <div className="fade-up" style={{background:"#fff",border:"1px solid #EDE9E2",borderRadius:14,padding:"20px",marginTop:8}}>
-          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",letterSpacing:"2px",color:"#9A9288",marginBottom:16}}>{editId?"EDITAR":"NOVO PRODUTO"}</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-            <Field label="Nome *"><input className="inp" value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="Ex: Shampoo Hidra" /></Field>
-            <Field label="Marca"><input className="inp" value={form.brand} onChange={e=>setForm(p=>({...p,brand:e.target.value}))} placeholder="Ex: L'Oréal" /></Field>
-            <Field label="Categoria"><select className="inp" value={form.category} onChange={e=>setForm(p=>({...p,category:e.target.value}))}><option value="">Selecione</option>{PRODUCT_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
-            <Field label="SKU"><input className="inp" value={form.sku} onChange={e=>setForm(p=>({...p,sku:e.target.value}))} placeholder="Código interno" /></Field>
-            <Field label="Preço (R$) *"><input className="inp" type="number" step="0.01" min="0" value={form.price} onChange={e=>setForm(p=>({...p,price:e.target.value}))} placeholder="0,00" /></Field>
-            <Field label="Estoque"><input className="inp" type="number" min="0" value={form.stock} onChange={e=>setForm(p=>({...p,stock:e.target.value}))} placeholder="0" /></Field>
-          </div>
-          <Field label="Foto">
-            <div onClick={()=>fileRef.current.click()} className="drop-zone" style={{padding:"16px",height:form.photoPreview?120:70,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
-              {form.photoPreview?<img src={form.photoPreview} alt="preview" style={{maxHeight:"100%",maxWidth:"100%",objectFit:"contain",borderRadius:8}} />:<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288"}}>📷 Clique para adicionar foto</span>}
-            </div>
-            <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={handlePhoto} style={{display:"none"}} />
-          </Field>
-          <div style={{display:"flex",gap:10,marginTop:16}}>
-            <button onClick={resetForm} className="btn" style={{flex:1,padding:"10px",borderRadius:8,border:"1px solid #DDD8CE",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:"#7A7268"}}>Cancelar</button>
-            <button onClick={save} className="btn" style={{flex:2,padding:"10px",borderRadius:8,background:"#79B8D4",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",letterSpacing:"1px"}}>SALVAR</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-      {/* ══ ADMIN PANEL ═════════════════════════════════════════════════════ */}
-      {screen==="admin"&&(()=>{
-        if(!isAdmin) return(
-          <div style={{maxWidth:480,margin:"80px auto",padding:"40px 24px",textAlign:"center"}}>
-            <div style={{fontSize:"3rem",marginBottom:16}}>🔒</div>
-            <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.8rem",fontWeight:300,marginBottom:8}}>Acesso restrito</h2>
-            <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288"}}>Faça login com a conta de administrador.</p>
-          </div>
-        );
-        const [adminTab,   setAdminTab]   = React.useState("pending");
-        const [records,    setRecords]    = React.useState([]);
-        const [loading,    setLoading]    = React.useState(true);
-        const [selected,   setSelected]   = React.useState(null);
-        const [actionNote, setActionNote] = React.useState("");
-        const [acting,     setActing]     = React.useState(false);
-
-        React.useEffect(()=>{
-          setLoading(true);
-          import("firebase/firestore").then(({collection,query,where,getDocs,getFirestore})=>{
-            const db2=getFirestore();
-            const status = adminTab==="pending"?"pending_review": adminTab==="active"?"active":"rejected";
-            Promise.all([
-              getDocs(query(collection(db2,"establishments"),where("status","==",status))),
-              getDocs(query(collection(db2,"professionals"),  where("status","==",status))),
-            ]).then(([estSnap,profSnap])=>{
-              const all=[];
-              estSnap.forEach(d=>all.push({id:d.id,_type:"pj",...d.data()}));
-              profSnap.forEach(d=>all.push({id:d.id,_type:"pf",...d.data()}));
-              all.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
-              setRecords(all); setLoading(false);
-            }).catch(()=>setLoading(false));
-          });
-        },[adminTab]);
-
-        const act=async(record,newStatus)=>{
-          setActing(true);
-          import("firebase/firestore").then(async({doc,updateDoc,getFirestore})=>{
-            const db2=getFirestore();
-            const col=record._type==="pf"?"professionals":"establishments";
-            await updateDoc(doc(db2,col,record.id),{
-              status:newStatus,
-              reviewNote:actionNote,
-              reviewedAt:new Date().toISOString(),
-              reviewedBy:authUser.email,
-            });
-            setRecords(r=>r.filter(x=>x.id!==record.id));
-            setSelected(null); setActionNote(""); setActing(false);
-            showToast(newStatus==="active"?"✓ Aprovado e publicado!":"Cadastro rejeitado.","success");
-          });
-        };
-
-        const tabs=[
-          {id:"pending", label:"Pendentes",  color:"#E8B86D"},
-          {id:"active",  label:"Aprovados",  color:"#5BAA5B"},
-          {id:"rejected",label:"Rejeitados", color:"#D4735A"},
-        ];
-
-        return(
-          <div style={{maxWidth:900,margin:"0 auto",padding:"32px 24px"}}>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:28}}>
-              <span style={{fontSize:"1.4rem"}}>🛡</span>
-              <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"2rem",fontWeight:300}}>Painel de Revisão</h1>
-            </div>
-
-            {/* Tabs */}
-            <div style={{display:"flex",gap:8,marginBottom:24,borderBottom:"1px solid #EDE9E2",paddingBottom:0}}>
-              {tabs.map(t=>(
-                <button key={t.id} className="btn" onClick={()=>{setAdminTab(t.id);setSelected(null);}} style={{
-                  padding:"10px 20px",borderRadius:"8px 8px 0 0",border:"1px solid #EDE9E2",borderBottom:"none",
-                  background:adminTab===t.id?"#fff":"#F8F6F2",
-                  fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",
-                  color:adminTab===t.id?t.color:"#9A9288",
-                  fontWeight:adminTab===t.id?500:400,
-                  marginBottom:adminTab===t.id?"-1px":"0",
-                }}>
-                  {t.label}
-                </button>
-              ))}
-            </div>
-
-            {loading&&<div style={{textAlign:"center",padding:"40px",fontFamily:"'DM Sans',sans-serif",fontSize:"0.82rem",color:"#9A9288"}}>Carregando...</div>}
-
-            {!loading&&records.length===0&&(
-              <div style={{textAlign:"center",padding:"60px 24px",background:"#fff",borderRadius:14,border:"2px dashed #EDE9E2"}}>
-                <div style={{fontSize:"2rem",marginBottom:8}}>✅</div>
-                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.2rem",color:"#7A7268"}}>Nenhum cadastro {adminTab==="pending"?"pendente":adminTab==="active"?"aprovado":"rejeitado"}</div>
-              </div>
-            )}
-
-            <div style={{display:"grid",gridTemplateColumns:selected?"1fr 380px":"1fr",gap:20,alignItems:"start"}}>
-              {/* Lista */}
-              <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                {records.map(r=>(
-                  <div key={r.id} onClick={()=>setSelected(selected?.id===r.id?null:r)} className="hov" style={{
-                    background:"#fff",borderRadius:12,padding:"16px 20px",border:`1.5px solid ${selected?.id===r.id?"#7B3FBE":"#EDE9E2"}`,
-                    cursor:"pointer",display:"flex",gap:14,alignItems:"center",
-                  }}>
-                    <div style={{width:44,height:44,borderRadius:10,background:r._type==="pf"?"#79B8D415":"#C9A96E15",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.4rem",flexShrink:0}}>
-                      {r._type==="pf"?"💆":"🏢"}
-                    </div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#1A1715",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                        {r._type==="pf"?r.professionalName:r.businessName||r.tradeName}
-                      </div>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288",marginTop:2}}>
-                        {r._type==="pf"?"Autônomo":"Estabelecimento"} · {r.city}{r.state?`, ${r.state}`:""} · {r.email}
-                      </div>
-                    </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end",flexShrink:0}}>
-                      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",padding:"3px 8px",borderRadius:10,
-                        background:r._type==="pf"?"#79B8D415":"#C9A96E15",
-                        color:r._type==="pf"?"#4A8FAA":"#9A6B30"}}>
-                        {r._type==="pf"?"CPF":"CNPJ"}
-                      </span>
-                      {r.cnpjVerified&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#5BAA5B"}}>✓ Verificado</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Detalhe */}
-              {selected&&(
-                <div className="fade-up" style={{background:"#fff",borderRadius:14,border:"1px solid #EDE9E2",padding:"24px",position:"sticky",top:80}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
-                    <div>
-                      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.3rem",color:"#1A1715"}}>
-                        {selected._type==="pf"?selected.professionalName:selected.businessName}
-                      </div>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288",marginTop:2}}>
-                        Protocolo: {selected.protocol||selected.id.slice(0,8).toUpperCase()}
-                      </div>
-                    </div>
-                    <button className="btn" onClick={()=>setSelected(null)} style={{color:"#9A9288",fontSize:"1.1rem",background:"transparent"}}>✕</button>
-                  </div>
-
-                  {/* Dados principais */}
-                  <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:16}}>
-                    {[
-                      ["Tipo",        selected._type==="pf"?"Profissional Autônomo":"Estabelecimento"],
-                      ["E-mail",      selected.email],
-                      ["Telefone",    selected.phone],
-                      ["Cidade",      `${selected.city||"—"}${selected.state?`, ${selected.state}`:""}`],
-                      selected._type==="pj"?["CNPJ", selected.cnpj||"—"]:["CPF", selected.cpf||"—"],
-                      selected._type==="pj"?["CNPJ verificado", selected.cnpjVerified?"✓ Sim":"✗ Não"]:null,
-                      ["E-mail verificado", selected.emailVerified?"✓ Sim":"✗ Não"],
-                    ].filter(Boolean).map(([k,v])=>(
-                      <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #F0EDE6"}}>
-                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#9A9288"}}>{k}</span>
-                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#1A1715",fontWeight:500,textAlign:"right",maxWidth:"55%"}}>{v}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {selected.description&&(
-                    <div style={{background:"#F8F6F2",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:4}}>DESCRIÇÃO</div>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#1A1715",lineHeight:1.5}}>{selected.description}</div>
-                    </div>
-                  )}
-
-                  {selected._type==="pf"&&selected.specialties&&(
-                    <div style={{background:"#79B8D410",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#4A8FAA",marginBottom:4}}>ESPECIALIDADES</div>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#1A1715"}}>{selected.specialties}</div>
-                    </div>
-                  )}
-
-                  {/* Documento enviado */}
-                  <div style={{background:"#F8F6F2",borderRadius:8,padding:"10px 12px",marginBottom:16}}>
-                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288",marginBottom:6}}>DOCUMENTO</div>
-                    {selected.docUploaded
-                      ? <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#5BAA5B"}}>✓ Documento enviado — revisar no Firebase Storage</div>
-                      : <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#D4735A"}}>✗ Nenhum documento enviado</div>
-                    }
-                  </div>
-
-                  {/* Nota de revisão */}
-                  {adminTab==="pending"&&(
-                    <>
-                      <div style={{marginBottom:12}}>
-                        <label style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",display:"block",marginBottom:6}}>Nota de revisão (opcional)</label>
-                        <textarea className="inp" rows={2} value={actionNote} onChange={e=>setActionNote(e.target.value)} placeholder="Ex: Documento ilegível, solicitar reenvio..." style={{resize:"vertical",fontSize:"0.78rem"}} />
-                      </div>
-                      <div style={{display:"flex",gap:10}}>
-                        <button className="btn" onClick={()=>act(selected,"rejected")} disabled={acting} style={{flex:1,padding:"10px",borderRadius:8,background:"#FFF5F3",border:"1px solid #F4D0C8",fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#D4735A"}}>
-                          ✗ Rejeitar
-                        </button>
-                        <button className="btn" onClick={()=>act(selected,"active")} disabled={acting} style={{flex:2,padding:"10px",borderRadius:8,background:"#5BAA5B",color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",letterSpacing:"0.5px"}}>
-                          {acting?<><span className="spinner"/>Processando...</>:"✓ Aprovar e publicar"}
-                        </button>
-                      </div>
-                    </>
-                  )}
-
-                  {adminTab!=="pending"&&(
-                    <div style={{background:adminTab==="active"?"#5BAA5B10":"#D4735A10",borderRadius:8,padding:"10px 12px"}}>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:adminTab==="active"?"#5BAA5B":"#D4735A"}}>
-                        {adminTab==="active"?"✓ Aprovado":"✗ Rejeitado"} · {selected.reviewedBy||"admin"}
-                      </div>
-                      {selected.reviewNote&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",marginTop:4}}>{selected.reviewNote}</div>}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })()}
-
-
-// ─── SMALL COMPONENTS ─────────────────────────────────────────────────────────
-function FormSection({title,icon,children}){return(<div><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:24}}><span style={{fontSize:"1.3rem"}}>{icon}</span><h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.5rem",fontWeight:300}}>{title}</h3></div><div style={{display:"flex",flexDirection:"column",gap:16}}>{children}</div></div>);}
-function Row2({children}){return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>{children}</div>;}
-function Field({label,error,children}){return(<div><label style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#7A7268",letterSpacing:"0.5px",display:"block",marginBottom:6}}>{label}</label>{children}{error&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.68rem",color:"#D4735A",marginTop:4,animation:"fadeUp 0.2s ease"}}>⚠ {error}</div>}</div>);}
-function Hint({children,ok}){return(<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:ok?"#5BAA5B":"#9A9288",background:ok?"#5BAA5B10":"#F8F6F2",padding:"8px 12px",borderRadius:6,border:`1px solid ${ok?"#5BAA5B30":"#EDE9E2"}`,marginTop:4}}>{children}</div>);}
-function ImageUpload({preview,onChange,label}){const ref=useRef();return(<div onClick={()=>ref.current.click()} className="drop-zone" style={{height:120,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>{preview?<img src={preview} alt="preview" style={{maxHeight:"100%",maxWidth:"100%",objectFit:"cover",borderRadius:8}} />:<div style={{textAlign:"center"}}><div style={{fontSize:"1.5rem",marginBottom:6}}>📷</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.7rem",color:"#9A9288"}}>{label}</div></div>}<input ref={ref} type="file" accept="image/jpeg,image/png,image/webp" onChange={onChange} style={{display:"none"}} /></div>);}
-function DocUpload({file,onChange,label}){const ref=useRef();const isValidType=file?ALLOWED_DOC_TYPES.includes(file.type):true;return(<div onClick={()=>ref.current.click()} className="drop-zone" style={{padding:"18px",display:"flex",alignItems:"center",gap:12,borderColor:file&&!isValidType?"#D4735A":undefined}}>{file?<><div style={{width:36,height:36,borderRadius:8,background:isValidType?"#5BAA5B15":"#D4735A15",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.2rem",flexShrink:0}}>{isValidType?"✅":"❌"}</div><div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.78rem",color:isValidType?"#1A1715":"#D4735A"}}>{file.name}</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.65rem",color:"#9A9288"}}>{(file.size/1024).toFixed(0)} KB · {isValidType?"Formato aceito":"Inválido — use PDF, JPG ou PNG"}</div></div></>:<><div style={{fontSize:"1.5rem"}}>📄</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.75rem",color:"#9A9288"}}>{label}</div></>}<input ref={ref} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={onChange} style={{display:"none"}} /></div>);}
-function SectionHeader({title,icon,count,onAdd}){return(<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:"1.1rem"}}>{icon}</span><span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.3rem",fontWeight:400}}>{title}</span>{count>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.7rem",background:"#F8F6F2",color:"#9A9288",padding:"2px 8px",borderRadius:12,border:"1px solid #EDE9E2"}}>{count}</span>}</div><button onClick={onAdd} className="btn" style={{padding:"7px 16px",borderRadius:8,background:"#1A1715",color:"#F7F5F0",fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",letterSpacing:"1px"}}>+ ADICIONAR</button></div>);}
-function EmptyState({icon,text,sub}){return(<div style={{textAlign:"center",padding:"40px 24px",background:"#fff",borderRadius:12,border:"2px dashed #EDE9E2",marginBottom:16}}><div style={{fontSize:"2rem",marginBottom:8}}>{icon}</div><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",color:"#7A7268"}}>{text}</div><div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"0.72rem",color:"#B0A898",marginTop:4}}>{sub}</div></div>);}
